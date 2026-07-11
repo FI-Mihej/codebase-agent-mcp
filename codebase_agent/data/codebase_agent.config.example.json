@@ -1,0 +1,112 @@
+{
+  "openai_compatible": {
+    "base_url": "http://localhost:1234",
+    "api_key": "[EMPTY]",
+    "model": "local-model-name",
+    "temperature": 0.2,
+    "reasoning_allowed": false,
+    "reasoning_effort": "none",
+    "max_tokens": 65536,
+    "context_compression_threshold": 0.6,
+    "timeout_seconds": 600,
+    "max_tool_rounds": 120,
+    "max_tool_response_bytes": 5120,
+    "built_in_plugins": [
+      {
+        "name": "qdrant_fastembed",
+        "allowed": false,
+        "configuration": {
+          "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+          "init": {
+            "url": "http://localhost:6333"
+          }
+        }
+      },
+      {
+        "name": "qdrant_cloud",
+        "allowed": false,
+        "configuration": {
+          "init": {
+            "url": "https://xxxxxx-xxxxx-xxxxx-xxxx-xxxxxxxxx.us-east.aws.cloud.qdrant.io:6333",
+            "api_key": "<your-api-key>",
+            "cloud_inference": true
+          }
+        }
+      },
+      {
+        "name": "built_in_fs",
+        "allowed": true,
+        "denied_tools": [
+          "fs__read_text_file"
+        ],
+        "configuration": {
+          "max_file_bytes": 1048576,
+          "max_search_results": 100
+        }
+      },
+      {
+        "name": "text_file_read_and_refactor_mcp",
+        "allowed": true,
+        "denied_tools": [
+          "text_file__find_span_boundaries",
+          "text_file__find_span_between_boundaries",
+          "text_file__find_span_with_boundaries",
+          "text_file__replace_span_between_boundaries",
+          "text_file__replace_span_with_boundaries",
+          "text_file__patch_spans_by_boundary_patterns",
+          "text_file__replace_content_by_line_range",
+          "text_file__replace_slice",
+          "text_file__replace_dev_word",
+          "text_file__replace_text_in_brackets",
+          "text_file__replace_text_with_brackets",
+          "text_file__patch_text_using_brackets_pattern"
+        ]
+      }
+    ],
+    "mcp_plugins": [
+      {
+        "name": "mcp_filesystem",
+        "allowed": false,
+        "denied_tools": [
+          "read_file",
+          "read_text_file",
+          "read_media_file",
+          "read_multiple_files",
+          "list_allowed_directories",
+          "directory_tree",
+          "write_file",
+          "edit_file",
+          "create_directory",
+          "move_file"
+        ],
+        "configuration": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "/path/to/other/allowed/dir_1",
+            "/path/to/other/allowed/dir_N"
+          ]
+        }
+      }
+    ]
+  },
+  "jobs": {
+    "storage_backend": "sqlite",
+    "sqlite_path": "codebase_agent.jobs.sqlite3",
+    "max_concurrent_jobs": 2,
+    "job_ttl_seconds": 3600,
+    "max_completed_jobs": 100,
+    "status_update_interval_seconds": 1,
+    "result_wait_timeout_seconds": 50,
+    "result_poll_interval_seconds": 1
+  },
+  "libraries": [
+    {
+      "name": "example-lib",
+      "allowed": false,
+      "path": "/absolute/path/to/example-lib",
+      "instructions": "Prefer documented public APIs. First, check the ./examples and ./docs folders. Source code directory: `./src`"
+    }
+  ]
+}

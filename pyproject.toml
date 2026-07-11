@@ -1,0 +1,141 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codebase-agent-mcp"
+dynamic = ["version"]
+description = "An autonomous MCP agent that provides token-efficient code analysis, documentation retrieval, and implementation guidance for large library repositories using a dedicated OpenAI-compatible LLM."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+keywords = [
+    "cengal",
+    "crossplatform",
+    "LLM",
+    "MCP",
+    "MCP-server",
+    "MCP server",
+    "text processing",
+    "file system",
+    "refactoring",
+]
+classifiers = [
+    'Programming Language :: Python :: 3',
+    'License :: OSI Approved :: Apache Software License',
+    'Operating System :: OS Independent',
+    'Development Status :: 5 - Production/Stable',
+    'Environment :: Console',
+    'Environment :: MacOS X',
+    'Environment :: Web Environment',
+    'Environment :: Win32 (MS Windows)',
+    'Environment :: X11 Applications',
+    'Framework :: AsyncIO',
+    'Intended Audience :: Developers',
+    'Intended Audience :: Education',
+    'Intended Audience :: Financial and Insurance Industry',
+    'Intended Audience :: Healthcare Industry',
+    'Intended Audience :: Information Technology',
+    'Intended Audience :: Manufacturing',
+    'Intended Audience :: Other Audience',
+    'Intended Audience :: Science/Research',
+    'Intended Audience :: System Administrators',
+    'Intended Audience :: Telecommunications Industry',
+    'License :: OSI Approved :: Apache Software License',
+    'Operating System :: Android',
+    'Operating System :: MacOS',
+    'Operating System :: MacOS :: MacOS X',
+    'Operating System :: Microsoft',
+    'Operating System :: Microsoft :: Windows :: Windows 7',
+    'Operating System :: Microsoft :: Windows :: Windows 8',
+    'Operating System :: Microsoft :: Windows :: Windows 8.1',
+    'Operating System :: Microsoft :: Windows :: Windows 10',
+    'Operating System :: Microsoft :: Windows :: Windows 11',
+    'Operating System :: Microsoft :: Windows :: Windows Server 2008',
+    'Operating System :: Microsoft :: Windows :: Windows Vista',
+    'Operating System :: OS Independent',
+    'Operating System :: POSIX',
+    'Operating System :: POSIX :: BSD',
+    'Operating System :: POSIX :: BSD :: FreeBSD',
+    'Operating System :: POSIX :: BSD :: NetBSD',
+    'Operating System :: POSIX :: BSD :: OpenBSD',
+    'Operating System :: POSIX :: Linux',
+    'Operating System :: POSIX :: Other',
+    'Operating System :: Unix',
+    'Operating System :: iOS',
+    'Programming Language :: Python',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Programming Language :: Python :: 3.14',
+    'Programming Language :: Python :: 3.15',
+    'Programming Language :: Python :: Implementation',
+    'Programming Language :: Python :: Implementation :: CPython',
+    'Programming Language :: Python :: Implementation :: MicroPython',
+    'Programming Language :: Python :: Implementation :: PyPy',
+    'Programming Language :: Unix Shell',
+    'Topic :: Adaptive Technologies',
+    'Topic :: Communications',
+    'Topic :: Scientific/Engineering',
+    'Topic :: Scientific/Engineering :: Artificial Intelligence',
+    'Topic :: Scientific/Engineering :: Artificial Life',
+    'Topic :: Software Development',
+    'Topic :: Software Development :: Libraries',
+    'Topic :: Software Development :: Libraries :: Application Frameworks',
+    'Topic :: Software Development :: Libraries :: Python Modules',
+    'Typing :: Typed',
+]
+dependencies = [
+  "mcp",
+  "openai>=1.0",
+  "pydantic>=2.0",
+  "httpx>=0.25",
+  "qdrant-client[fastembed]",
+  "cengal-light[cengal__text_processing__encoding_detection, cengal__file_system__app_fs_structure__app_dir_path]~=5.0",
+  "text-file-read-and-refactor-mcp~=1.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest",
+]
+
+[project.scripts]
+codebase-agent-mcp = "codebase_agent.server:main"
+cb-agent-init = "codebase_agent.server:console_script__init"
+cb-agent-ensure-qdrant-models = "codebase_agent.server:console_script__ensure_qdrant_models"
+cb-agent-sanitize-library-codebases = "codebase_agent.server:console_script__sanitize_library_codebases"
+cb-agent-index-dependency-libraries = "codebase_agent.server:console_script__index_dependency_libraries"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+norecursedirs = [
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "dependencies",
+    ".git",
+    ".pytest_cache",
+]
+
+[project.urls]
+Homepage = "https://github.com/FI-Mihej/codebase-agent-mcp"
+
+[tool.hatch.version]
+path = "codebase_agent/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/codebase_agent",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "/codebase_agent",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"codebase_agent/data/codebase_agent.config.example.json" = "codebase_agent/data/codebase_agent.config.example.json"
