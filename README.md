@@ -199,13 +199,21 @@ CodebaseAgent-MCP works as a client to [Qdrant](https://github.com/qdrant/qdrant
 
 ### Install subagents and skills to your harness (ClaudeCode/Codex/etc.)
 
-* ClaudeCode: copy `./integration_to/claude/.claude` to root dir of your project.
-* Codex: copy `./integration_to/codex/.agents`, `./integration_to/codex/.codex` and `./integration_to/codex/.codex/config.toml` to root dir of your project.
-* OpenCode: copy `./integration_to/opencode/.opencode` to root dir of your project.
-* Cursor: copy `./integration_to/cursor/.cursor` to root dir of your project.
-* Antigravity: copy `./integration_to/antigravity/.agents` to root dir of your project. Antigravity lacks an agent concept, which means the work will be less token-efficient than when using other harnesses. Be sure to enable Implicit Caching to achieve significant savings.
-* Hermes Agent: copy `./integration_to/hermes/skills` to root dir of your project.
-* Pi Coding Agent: 1. install `https://github.com/nicobailon/pi-subagents` or similar solution; 2. copy `./integration_to/pi_agent/.pi` to root dir of your project.
+Go to the root directory of your project and run:
+
+```bash
+uvx --from codebase-agent-mcp cb-agent-install-skills-to-current-dir
+```
+
+Alternatively, you may clone the repository using `git clone https://github.com/FI-Mihej/codebase-agent-mcp.git` and proceed manually:
+
+* ClaudeCode: copy `./codebase_agent/data/integration_to/claude/.claude` to root dir of your project.
+* Codex: copy `./codebase_agent/data/integration_to/codex/.agents`, `./codebase_agent/data/integration_to/codex/.codex` and `./codebase_agent/data/integration_to/codex/.codex/config.toml` to root dir of your project.
+* OpenCode: copy `./codebase_agent/data/integration_to/opencode/.opencode` to root dir of your project.
+* Cursor: copy `./codebase_agent/data/integration_to/cursor/.cursor` to root dir of your project.
+* Antigravity: copy `./codebase_agent/data/integration_to/antigravity/.agents` to root dir of your project. Antigravity lacks an agent concept, which means the work will be less token-efficient than when using other harnesses. Be sure to enable Implicit Caching to achieve significant savings.
+* Hermes Agent: copy `./codebase_agent/data/integration_to/hermes/skills` to root dir of your project.
+* Pi Coding Agent: 1. install `https://github.com/nicobailon/pi-subagents` or similar solution; 2. copy `./codebase_agent/data/integration_to/pi_agent/.pi` to root dir of your project.
 
 ## Usage
 

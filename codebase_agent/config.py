@@ -95,8 +95,12 @@ def get_app_root_path() -> Path:
     return Path(path_relative_to_current_src())
 
 
+def get_app_data_dir_path() -> Path:
+    return (get_app_root_path() / "data").resolve()
+
+
 def get_config_template_path() -> Path:
-    return get_app_root_path() / "data" / CONFIG_TEMPLATE_NAME
+    return (get_app_root_path() / "data" / CONFIG_TEMPLATE_NAME).resolve()
 
 
 def ensure_config_exists(config_path: Path | None = None) -> Path:

@@ -16,8 +16,11 @@
 # limitations under the License.
 
 
-"""CodebaseAgent-MCP package."""
+def main():
+    from codebase_agent.server import console_script__install_skills_to_current_dir
 
-__all__ = ["__version__"]
+    console_script__install_skills_to_current_dir()
 
-__version__ = "1.28.0"
+
+if __name__ == "__main__":
+    main()

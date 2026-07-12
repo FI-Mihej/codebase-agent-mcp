@@ -107,6 +107,7 @@ cb-agent-init = "codebase_agent.server:console_script__init"
 cb-agent-ensure-qdrant-models = "codebase_agent.server:console_script__ensure_qdrant_models"
 cb-agent-sanitize-library-codebases = "codebase_agent.server:console_script__sanitize_library_codebases"
 cb-agent-index-dependency-libraries = "codebase_agent.server:console_script__index_dependency_libraries"
+cb-agent-install-skills-to-current-dir = "codebase_agent.server:console_script__install_skills_to_current_dir"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -136,6 +137,3 @@ include = [
 packages = [
     "/codebase_agent",
 ]
-
-[tool.hatch.build.targets.wheel.force-include]
-"codebase_agent/data/codebase_agent.config.example.json" = "codebase_agent/data/codebase_agent.config.example.json"

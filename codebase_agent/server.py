@@ -33,7 +33,13 @@ from mcp.server.stdio import stdio_server
 from mcp.shared.context import RequestContext, LifespanContextT
 
 from codebase_agent import app_context
-from codebase_agent.config import AgentConfig, load_config, validate_library_path, ensure_config_exists
+from codebase_agent.config import (
+    AgentConfig, 
+    load_config, 
+    validate_library_path, 
+    ensure_config_exists, 
+    get_app_data_dir_path,
+)
 from codebase_agent.jobs import CodebaseAnalysisJobManager
 from codebase_agent.io_debug import IODebugLogger, logged_io_streams
 from codebase_agent.openai_compatible_client import OpenAICompatibleClient
@@ -54,6 +60,7 @@ from codebase_agent.types import (
 )
 from codebase_agent.types import ClientRequestType
 from codebase_agent.app_context import AppContext
+from cengal.file_system.directory_manager import dir_exists
 
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -575,6 +582,33 @@ def console_script__ensure_qdrant_models() -> None:
     apply_qdrant_cache_dir_path(ensure_qdrant_cache_dir_path())
     config: AgentConfig = load_config()
     ensure_qdrant_models(config)
+
+
+def console_script__install_skills_to_current_dir() -> None:
+    harness_names = [
+        'antigravity',
+        'claude',
+        'codex',
+        'cursor',
+        'hermes',
+        'opencode',
+        'pi_agent',
+    ]
+
+    integration_dir: Path = (get_app_data_dir_path() / "integration_to").resolve()
+    for harness_name in harness_names:
+        harness_dir: Path = integration_dir / harness_name
+        if not dir_exists(str(harness_dir)):
+            print(f"Integration harness '{harness_name}' is not available in the current installation.")
+            continue
+
+        target_dir: Path = Path.cwd()
+        try:
+            import shutil
+            shutil.copytree(harness_dir, target_dir, dirs_exist_ok=True)
+            print(f"Integration harness '{harness_name}' has been installed to the current directory.")
+        except Exception as ex:
+            print(f"Failed to install integration harness '{harness_name}': {ex}")
 
 
 def console_script__sanitize_library_codebases() -> None:
