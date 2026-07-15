@@ -7,7 +7,7 @@ import pytest
 
 from pydantic import ValidationError
 
-from codebase_agent.config import OpenAICompatibleConfig, load_config
+from codebase_agent.config import LibraryConfig, OpenAICompatibleConfig, load_config
 from codebase_agent.openai_compatible_client import normalize_base_url
 
 
@@ -102,6 +102,18 @@ def test_load_config_accepts_plugin_denied_tools(tmp_path: Path) -> None:
     assert config.openai_compatible.denied_tools_for_allowed_built_in_plugin("built_in_fs") == frozenset(
         {"fs__read_text_file", "fs__search_text_in_files"}
     )
+
+
+def test_disallowed_library_skips_path_validation() -> None:
+    config = LibraryConfig(name="example-lib", allowed=False, path=Path("relative/example-lib"))
+
+    assert config.allowed is False
+    assert config.path == Path("relative/example-lib")
+
+
+def test_allowed_library_requires_absolute_path() -> None:
+    with pytest.raises(ValidationError):
+        LibraryConfig(name="example-lib", allowed=True, path=Path("relative/example-lib"))
 
 
 @pytest.mark.parametrize(

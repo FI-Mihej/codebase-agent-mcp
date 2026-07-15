@@ -571,6 +571,8 @@ def console_script__init() -> None:
 def console_script__ensure_qdrant_models() -> None:
     """Console script entry point for initializing Qdrant embeddings."""
 
+    config_path: Path = ensure_config_exists()
+
     from codebase_agent.built_in_plugins.qdrant_client import (
         apply_qdrant_cache_dir_path, 
         ensure_qdrant_cache_dir_path,
@@ -585,6 +587,8 @@ def console_script__ensure_qdrant_models() -> None:
 
 
 def console_script__install_skills_to_current_dir() -> None:
+    config_path: Path = ensure_config_exists()
+
     harness_names = [
         'antigravity',
         'claude',
@@ -613,14 +617,16 @@ def console_script__install_skills_to_current_dir() -> None:
 
 def console_script__sanitize_library_codebases() -> None:
     print("Functionality will be added soon - stay tuned for updates.")
-
+    config_path: Path = ensure_config_exists()
 
 def console_script__index_dependency_libraries() -> None:
     print("Functionality will be added soon - stay tuned for updates.")
-
+    config_path: Path = ensure_config_exists()
 
 def main() -> None:
     """Run the MCP server over stdio."""
+
+    config_path: Path = ensure_config_exists()
 
     from codebase_agent.built_in_plugins.qdrant_client import apply_qdrant_cache_dir_path, ensure_qdrant_cache_dir_path
 

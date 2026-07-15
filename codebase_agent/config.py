@@ -352,12 +352,12 @@ class LibraryConfig(BaseModel):
     path: Path
     instructions: str = ""
 
-    @field_validator("path")
-    @classmethod
-    def path_must_be_absolute(cls, value: Path) -> Path:
-        if not value.is_absolute():
+    @model_validator(mode="after")
+    def allowed_path_must_be_absolute(self) -> "LibraryConfig":
+        if self.allowed and not self.path.is_absolute():
             raise ValueError("library path must be absolute")
-        return value
+
+        return self
 
 
 class JobConfig(BaseModel):

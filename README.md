@@ -4,9 +4,11 @@
 
 ![GitHub License](https://img.shields.io/github/license/FI-Mihej/codebase-agent-mcp?color=darkgreen) ![Static Badge](https://img.shields.io/badge/API_status-Stable-darkgreen)
 
+[![codebase-agent-mcp MCP server](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp/badges/score.svg)](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp)
+
 # CodebaseAgent-MCP
 
-CodebaseAgent-MCP is an MCP server that uses a lightweight RAG pipeline to delegate repository analysis to a dedicated OpenAI-compatible LLM. Instead of forcing your primary coding assistant to repeatedly scan large codebases, it performs that work separately and returns only the information needed for the current task.
+CodebaseAgent-MCP is a token-efficient MCP server for AI coding agents that delegates large codebase analysis to a dedicated OpenAI-compatible LLM, reducing context size, latency, and token costs. Instead of forcing your primary coding assistant to repeatedly scan large codebases, it performs that work separately and returns only the information needed for the current task.
 
 It can run against local models such as Gemma or Qwen, as well as inexpensive OpenAI-compatible cloud providers, reducing both latency and token consumption while keeping the primary assistant focused on reasoning and code generation.
 
@@ -283,6 +285,10 @@ Github repository is a curated public mirror of the project. Active development 
 * Integration of a content sanitization system for prompt injection protection.
 * A configuration field for LLM instructions on how to use connected MCP servers.
 * An internal sub-agent hierarchy for faster LLM operation.
+
+# Glama.AI
+
+[![codebase-agent-mcp MCP server](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp/badges/card.svg)](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp)
 
 # Cengal
 
