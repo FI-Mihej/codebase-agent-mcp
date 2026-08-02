@@ -24,7 +24,7 @@ from __future__ import annotations
 import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 from codebase_agent.built_in_plugins.local_fs_tools import LocalFilesystemTools
 from codebase_agent.built_in_plugins.qdrant_client import QdrantClientABC, qdrant_client_factory
@@ -44,7 +44,7 @@ class PluginBundle:
     plugins: Dict[str, PluginABC]
     qdrant_client: QdrantClientABC
     local_fs_tools: LocalFilesystemTools
-    text_file_tools: StdioMCPPlugin
+    text_file_tools: Optional[StdioMCPPlugin] = None
 
 
 async def build_plugin_bundle(config: AgentConfig, exit_stack: AsyncExitStack) -> PluginBundle:
@@ -65,6 +65,7 @@ async def build_plugin_bundle(config: AgentConfig, exit_stack: AsyncExitStack) -
     text_file_plugin_config = config.openai_compatible.allowed_built_in_plugin_config(
         TEXT_FILE_READ_AND_REFACTOR_PLUGIN_NAME
     )
+    text_file_plugin: Optional[StdioMCPPlugin] = None
     if text_file_plugin_config is not None:
         text_file_plugin = await StdioMCPPlugin.create(
             plugin_config=text_file_plugin_config,

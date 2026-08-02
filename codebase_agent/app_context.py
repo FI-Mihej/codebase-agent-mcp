@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Any
+from typing import TYPE_CHECKING, Dict, Any, Optional
 
 from codebase_agent.config import AgentConfig
 
@@ -46,7 +46,7 @@ class AppContext:
     plugins: Dict[str, PluginABC]
     qdrant_client: QdrantClientABC
     local_fs_tools: LocalFilesystemTools
-    text_file_tools: StdioMCPPlugin
+    text_file_tools: Optional[StdioMCPPlugin] = None
 
     def allowed_tool_names(self) -> list[str]:
         """Return the names of all allowed tools."""

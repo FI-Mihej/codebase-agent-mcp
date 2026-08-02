@@ -350,7 +350,7 @@ async def codebase_get_job_status(
     ],
     ctx: Context[ServerSession, AppContext],
 ) -> dict[str, Any]:
-    """**Get async analysis job status. Check either `codebase_start_job_related_files_search` or `codebase_start_job_analysis` job progress. Poll until `success`/`failure`. Wait 50s/request. Do not assume failure before terminal status.**"""
+    """**Get async analysis job status. Checks the progress of both the `codebase_start_job_related_files_search` and `codebase_start_job_analysis` jobs. You must poll using `codebase_get_job_status` tool until `success`/`failure`. This tool internally waits up to 50s/request. Avoid assuming failure before terminal status. You are forbidden to finish response while polling is running.**"""
 
     app_context: AppContext = ctx.request_context.lifespan_context
     try:
@@ -367,7 +367,7 @@ async def codebase_get_job_result(
     ],
     ctx: Context[ServerSession, AppContext],
 ) -> dict[str, Any]:
-    """Return the final result, error, or latest partial output for an analysis job."""
+    """Return the final result, error, or latest partial output for an analysis job. You must poll using `codebase_get_job_status` tool until `success`/`failure`. This tool internally waits up to 50s/request. Avoid assuming failure before terminal status. You are forbidden to finish response while polling is running."""
 
     app_context: AppContext = ctx.request_context.lifespan_context
     try:

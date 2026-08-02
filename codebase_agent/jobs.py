@@ -582,21 +582,29 @@ class CodebaseAnalysisJobManager:
                 self._jobs.pop(job_id, None)
 
     def _status_payload(self, job: AnalysisJob) -> dict[str, Any]:
-        return {
+        result = {
             "job_id": job.job_id,
             "status": job.status,
             "progress": job.progress,
             "error": job.error,
         }
+        if "running" == job.status:
+            result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_status` tool internally waits up to 50s/request. You are forbidden to finish response while polling is running."
+
+        return result
 
     def _result_payload(self, job: AnalysisJob) -> dict[str, Any]:
-        return {
+        result = {
             "job_id": job.job_id,
             "status": job.status,
             "result": job.result,
             "partial_result": job.partial_result,
             "error": job.error,
         }
+        if "running" == job.status:
+            result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_result` tool internally waits up to 50s/request. You are forbidden to finish response while polling is running."
+
+        return result
 
 
 def _job_from_row(row: sqlite3.Row) -> AnalysisJob:
