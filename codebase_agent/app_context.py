@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from codebase_agent.jobs import CodebaseAnalysisJobManager
     from codebase_agent.built_in_plugins.qdrant_client import QdrantClientABC
     from codebase_agent.built_in_plugins.local_fs_tools import LocalFilesystemTools
+    from codebase_agent.built_in_plugins.sub_agents import SubagentsTools
     from codebase_agent.types import (
         PluginABC,
     )
@@ -46,6 +47,7 @@ class AppContext:
     plugins: Dict[str, PluginABC]
     qdrant_client: QdrantClientABC
     local_fs_tools: LocalFilesystemTools
+    subagents: SubagentsTools
     text_file_tools: Optional[StdioMCPPlugin] = None
 
     def allowed_tool_names(self) -> list[str]:
@@ -55,6 +57,24 @@ class AppContext:
             allowed_tools_set.update(plugin.allowed_tool_names())
         
         return sorted(list(allowed_tools_set))
+
+    def allowed_built_in_tool_names(self) -> list[str]:
+        """Return the names of all allowed built-in tools."""
+        from codebase_agent.built_in_plugins.local_fs_tools import LocalFilesystemTools
+        from codebase_agent.built_in_plugins.qdrant_client import QdrantClientABC
+        from codebase_agent.built_in_plugins.sub_agents import SubagentsTools
+        from codebase_agent.mcp_stdio_plugin import StdioMCPPlugin
+        allowed_built_in_tools_set: set[str] = set()
+        for plugin in self.plugins.values():
+            if isinstance(plugin, (LocalFilesystemTools, QdrantClientABC, SubagentsTools)) or (isinstance(plugin, StdioMCPPlugin) and "text_file_read_and_refactor_mcp" == plugin.name()):
+                allowed_built_in_tools_set.update(plugin.allowed_tool_names())
+        
+        return sorted(list(allowed_built_in_tools_set))
+
+    def allowed_third_party_tool_names(self) -> list[str]:
+        """Return the names of all allowed third-party tools."""
+        allowed_third_party_tools_set: set[str] = set(self.allowed_tool_names()) - set(self.allowed_built_in_tool_names())
+        return sorted(list(allowed_third_party_tools_set))
     
     def allowed_tool_definitions(self) -> list[dict[str, Any]]:
         """Return all allowed tool definitions."""

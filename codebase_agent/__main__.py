@@ -16,9 +16,24 @@
 # limitations under the License.
 
 
-from .server import main
+import os
+import argparse
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="codebase-agent-mcp")
+    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio", required=False)
+    parser.add_argument("--host", default=None, help="default: 127.0.0.1", required=False)
+    parser.add_argument("--port", type=int, default=None, help="default: 8000", required=False)
+    args = parser.parse_args()
+
+    os.environ.setdefault("CODEBASE_AGENT_MCP_TRANSPORT", args.transport or "stdio")
+    os.environ.setdefault("CODEBASE_AGENT_MCP_HOST", args.host or "127.0.0.1")
+    os.environ.setdefault("CODEBASE_AGENT_MCP_PORT", str(args.port or 8000))
+
+    from .server import main as server_main
+    return server_main()
 
 
 if __name__ == "__main__":
     main()
-

@@ -7,7 +7,13 @@ import pytest
 
 from pydantic import ValidationError
 
-from codebase_agent.config import LibraryConfig, OpenAICompatibleConfig, load_config
+from codebase_agent.config import (
+    LibraryConfig,
+    OpenAICompatibleConfig,
+    get_local_data_path,
+    get_local_log_path,
+    load_config,
+)
 from codebase_agent.openai_compatible_client import normalize_base_url
 
 
@@ -73,14 +79,14 @@ def test_load_config(tmp_path: Path) -> None:
     library_root.mkdir()
     config_path = _write_config(tmp_path, library_root)
 
-    config = load_config(config_path)
+    config = load_config(config_path.parent)
 
     assert config.openai_compatible.model == "local-model"
     assert config.openai_compatible.tool_backend == "openai_tools"
     assert config.allowed_libraries()[0].name == "example-lib"
     assert config.jobs.max_concurrent_jobs == 2
     assert config.jobs.storage_backend == "sqlite"
-    assert config.jobs.sqlite_path == tmp_path / "codebase_agent.jobs.sqlite3"
+    assert config.jobs.sqlite_path == get_local_data_path() / "codebase_agent.jobs.sqlite3"
     assert config.jobs.sqlite_path.name == "codebase_agent.jobs.sqlite3"
     assert config.jobs.job_ttl_seconds == 3600
     assert config.jobs.max_completed_jobs == 100
@@ -89,13 +95,13 @@ def test_load_config(tmp_path: Path) -> None:
     assert config.io_debug.enabled is False
     assert config.io_debug.client_server is True
     assert config.io_debug.server_plugins is True
-    assert config.io_debug.log_path == tmp_path / "codebase_agent.io.jsonl"
+    assert config.io_debug.log_path == get_local_log_path() / "codebase_agent.io.jsonl"
 
 
 def test_load_config_accepts_plugin_denied_tools(tmp_path: Path) -> None:
     library_root = tmp_path / "example"
     library_root.mkdir()
-    config = load_config(_write_config_with_plugin_restrictions(tmp_path, library_root))
+    config = load_config(_write_config_with_plugin_restrictions(tmp_path, library_root).parent)
 
     assert config.openai_compatible.has_allowed_built_in_plugin("built_in_fs")
     assert config.openai_compatible.allowed_plugins()[0].name == "built_in_fs"
@@ -143,7 +149,7 @@ def test_context_compression_threshold_validates_range(threshold: float) -> None
 def test_tool_backend_none(tmp_path: Path) -> None:
     library_root = tmp_path / "example"
     library_root.mkdir()
-    config = load_config(_write_config(tmp_path, library_root, tool_backend="none"))
+    config = load_config(_write_config(tmp_path, library_root, tool_backend="none").parent)
 
     assert config.openai_compatible.tool_backend == "none"
 
@@ -151,12 +157,12 @@ def test_tool_backend_none(tmp_path: Path) -> None:
 def test_tool_backend_openai_tools(tmp_path: Path) -> None:
     library_root = tmp_path / "example"
     library_root.mkdir()
-    config = load_config(_write_config(tmp_path, library_root, tool_backend="openai_tools"))
+    config = load_config(_write_config(tmp_path, library_root, tool_backend="openai_tools").parent)
 
     assert config.openai_compatible.tool_backend == "openai_tools"
 
 
-def test_relative_io_debug_log_path_resolves_against_config_directory(tmp_path: Path) -> None:
+def test_relative_io_debug_log_path_resolves_against_local_log_directory(tmp_path: Path) -> None:
     config_dir = tmp_path / "project"
     library_root = tmp_path / "example"
     config_dir.mkdir()
@@ -183,13 +189,13 @@ def test_relative_io_debug_log_path_resolves_against_config_directory(tmp_path: 
         encoding="utf-8",
     )
 
-    config = load_config(config_path)
+    config = load_config(config_path.parent)
 
     assert config.io_debug.enabled is True
-    assert config.io_debug.log_path == config_dir / "logs" / "io.jsonl"
+    assert config.io_debug.log_path == get_local_log_path() / "logs" / "io.jsonl"
 
 
-def test_relative_sqlite_path_resolves_against_config_directory(
+def test_relative_sqlite_path_resolves_against_local_data_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,6 +229,6 @@ def test_relative_sqlite_path_resolves_against_config_directory(
 
     monkeypatch.chdir(process_cwd)
 
-    config = load_config(config_path)
+    config = load_config(config_path.parent)
 
-    assert config.jobs.sqlite_path == config_dir / "jobs.sqlite3"
+    assert config.jobs.sqlite_path == get_local_data_path() / "jobs.sqlite3"

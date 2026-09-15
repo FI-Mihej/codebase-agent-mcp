@@ -24,11 +24,14 @@ __all__ = [
     "QdrantCachedQuery",
     "QdrantUpdateResult",
     "qdrant_client_factory",
+    "QDRANT_DEFAULT_TOP_K",
 ]
 
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import logging
 import uuid
+import json
 
 from qdrant_client import QdrantClient, models
 from qdrant_client.conversions.common_types import (
@@ -52,12 +55,19 @@ from codebase_agent.config import (
     get_app_name,
 )
 from cengal.file_system.app_fs_structure.app_dir_path import AppDirectoryType, AppDirPath, app_dir_path
+from cengal.introspection.inspect import gsodi
 import os
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Union, TYPE_CHECKING
+if TYPE_CHECKING:
+    from codebase_agent.app_context import AppContext
 
+
+logger = logging.getLogger(__name__)
 
 QDRANT_CACHE_RELATIVE_DIR = "./models/fastembed"
 QDRANT_DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+QDRANT_COLLECTION_SCHEMA_OWNER = "codebase-agent-mcp"
+QDRANT_COLLECTION_SCHEMA_VERSION = 1
 COLLECTION_NAME_TEMPLATE__FIND_FILES: str = "find_files__{library_name}"
 COLLECTION_NAME_TEMPLATE__ANALYSIS: str = "analysis__{library_name}"
 QDRANT_PLUGIN_NAMES: List[str] = [
@@ -65,6 +75,7 @@ QDRANT_PLUGIN_NAMES: List[str] = [
     "qdrant_fastembed_gpu",
     "qdrant_cloud",
 ]
+QDRANT_DEFAULT_TOP_K: int = 5
 
 
 def ensure_qdrant_cache_dir_path(qdrant_cache_dir_path: Path | str | None = None) -> Path:
@@ -183,36 +194,44 @@ class QdrantClientABC(PluginABC, ABC):
         library_name: str,
         client_request_type: ClientRequestType,
         tool_name: str,
-        arguments: dict[str, Any],
+        arguments: Union[str, Dict[str, Any]],
     ) -> ToolResult:
         if tool_name not in self.allowed_tool_names():
             return {"ok": False, "error": {"code": "tool_not_enabled", "message": tool_name}}
 
         try:
             if tool_name == "vectordb__find_cached_queries":
-                result = self.find_cached_queries(
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                
+                cached_queries: List[QdrantCachedQuery] = self.find_cached_queries(
                     library_name=library_name,
                     client_request_type=client_request_type,
                     query=str(arguments.get("query", "")),
                     top_k=int(arguments.get("top_k", 5)),
                 )
-                return {
+                logger.debug(f"QdrantClient found {len(cached_queries)} cached queries for library '{library_name}', request type '{client_request_type}' and arguments `{arguments}`: \n{gsodi(cached_queries)}")
+                find_cached_queries_result: Dict[str, Any] = {
                     "ok": True,
                     "result": {
                         "cached_queries": [
                             {"query": item.query, "query_id": item.query_id}
-                            for item in result
+                            for item in cached_queries
                         ]
                     },
                 }
+                return json.dumps(find_cached_queries_result, indent=2, ensure_ascii=False)
             if tool_name == "vectordb__get_cached_response":
-                result = self.get_cached_response(
+                cached_response: str = self.get_cached_response(
                     library_name=library_name,
                     client_request_type=client_request_type,
                     query_id=str(arguments.get("query_id", "")),
                 )
-                return {"ok": True, "result": {"response": result}}
+                logger.debug(f"QdrantClient found cached response for library '{library_name}', request type '{client_request_type}' and arguments `{arguments}`: \n{gsodi(cached_response)}")
+                get_cached_response_result = {"ok": True, "result": {"response": cached_response}}
+                return json.dumps(get_cached_response_result, indent=2, ensure_ascii=False)
         except Exception as exc:
+            logger.exception(f"Error executing QdrantClient tool '{tool_name}' for library '{library_name}', request type '{client_request_type}' and arguments `{arguments}`: {exc}")
             return {"ok": False, "error": {"code": "vectordb_tool_error", "message": str(exc)}}
 
         return {"ok": False, "error": {"code": "tool_not_enabled", "message": tool_name}}
@@ -296,6 +315,10 @@ class QdrantClientFake(QdrantClientABC):
         )
         self.qdrant_client = None
         self.embedding_model_name = self.plugin_config.configuration.get("model_name", QDRANT_DEFAULT_MODEL_NAME)
+        self._app_context: Optional[AppContext] = None
+
+    def set_app_context(self, app_context):
+        self._app_context = app_context
     
     def upsert(
         self,
@@ -348,6 +371,14 @@ class QdrantClientFastembed(QdrantClientABC):
         init_config = self.plugin_config.configuration.get("init", {})
         self.qdrant_client = QdrantClient(**init_config)
         self.embedding_model_name = self.plugin_config.configuration.get("model_name", QDRANT_DEFAULT_MODEL_NAME)
+        self.recreate_incompatible_collections = self.plugin_config.configuration.get(
+            "recreate_incompatible_collections",
+            True,
+        )
+        if not isinstance(self.recreate_incompatible_collections, bool):
+            raise ValueError("recreate_incompatible_collections must be a boolean.")
+
+        embedding_size = self.qdrant_client.get_embedding_size(self.embedding_model_name)
         libraries = config.allowed_libraries()
         if libraries:
             library_config: LibraryConfig
@@ -356,13 +387,98 @@ class QdrantClientFastembed(QdrantClientABC):
                 if library_path:
                     collection_name__find_files = self.collection_name(library_name=library_config.name, client_request_type=ClientRequestType.find_files)
                     collection_name__analysis = self.collection_name(library_name=library_config.name, client_request_type=ClientRequestType.analysis)
-                    if not self.qdrant_client.collection_exists(collection_name__find_files):
-                        self.qdrant_client.create_collection(
-                            collection_name=collection_name__find_files,
-                        )
-                        self.qdrant_client.create_collection(
-                            collection_name=collection_name__analysis,
-                        )
+                    for collection_name in (
+                        collection_name__find_files,
+                        collection_name__analysis,
+                    ):
+                        self._ensure_collection(collection_name, embedding_size)
+        self._app_context: Optional[AppContext] = None
+
+    def set_app_context(self, app_context):
+        self._app_context = app_context
+
+    def _collection_metadata(self, embedding_size: int) -> Dict[str, Any]:
+        return {
+            "owner": QDRANT_COLLECTION_SCHEMA_OWNER,
+            "schema_version": QDRANT_COLLECTION_SCHEMA_VERSION,
+            "embedding_model": self.embedding_model_name,
+            "vector_size": embedding_size,
+            "distance": models.Distance.COSINE.value,
+            "vector_name": "unnamed",
+            "payload_schema_version": 1,
+        }
+
+    @staticmethod
+    def _has_expected_vector_schema(vectors_config: Any, embedding_size: int) -> bool:
+        return (
+            isinstance(vectors_config, models.VectorParams)
+            and vectors_config.size == embedding_size
+            and vectors_config.distance == models.Distance.COSINE
+        )
+
+    @staticmethod
+    def _has_expected_metadata(
+        actual_metadata: Dict[str, Any],
+        expected_metadata: Dict[str, Any],
+    ) -> bool:
+        return all(actual_metadata.get(key) == value for key, value in expected_metadata.items())
+
+    def _create_collection(
+        self,
+        collection_name: str,
+        embedding_size: int,
+        metadata: Dict[str, Any],
+    ) -> None:
+        self.qdrant_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=embedding_size,
+                distance=models.Distance.COSINE,
+            ),
+            metadata=metadata,
+        )
+
+    def _ensure_collection(self, collection_name: str, embedding_size: int) -> None:
+        expected_metadata = self._collection_metadata(embedding_size)
+        if not self.qdrant_client.collection_exists(collection_name):
+            self._create_collection(collection_name, embedding_size, expected_metadata)
+            return
+
+        collection_info = self.qdrant_client.get_collection(collection_name)
+        vectors_config = collection_info.config.params.vectors
+        actual_metadata = collection_info.config.metadata or {}
+        vector_schema_matches = self._has_expected_vector_schema(vectors_config, embedding_size)
+
+        if vector_schema_matches and self._has_expected_metadata(actual_metadata, expected_metadata):
+            return
+
+        # Collections created by the immediately preceding application version already have
+        # the correct vector schema but no ownership metadata. Adopt them without losing cache.
+        if vector_schema_matches and not actual_metadata:
+            logger.info("Adding schema metadata to compatible Qdrant collection %r.", collection_name)
+            self.qdrant_client.update_collection(
+                collection_name=collection_name,
+                metadata=expected_metadata,
+            )
+            return
+
+        is_owned_collection = actual_metadata.get("owner") == QDRANT_COLLECTION_SCHEMA_OWNER
+        is_known_legacy_schema = not actual_metadata and isinstance(vectors_config, dict) and not vectors_config
+        if not self.recreate_incompatible_collections:
+            raise RuntimeError(
+                f"Qdrant collection '{collection_name}' has an incompatible schema and "
+                "automatic recreation is disabled."
+            )
+
+        if not (is_owned_collection or is_known_legacy_schema):
+            raise RuntimeError(
+                f"Refusing to delete Qdrant collection '{collection_name}' because it is not "
+                f"owned by {QDRANT_COLLECTION_SCHEMA_OWNER!r} and is not a recognized legacy schema."
+            )
+
+        logger.warning("Recreating incompatible Qdrant cache collection %r.", collection_name)
+        self.qdrant_client.delete_collection(collection_name=collection_name)
+        self._create_collection(collection_name, embedding_size, expected_metadata)
     
     def upsert(
         self,
@@ -388,10 +504,10 @@ class QdrantClientFastembed(QdrantClientABC):
         payloads = [payload]
         points_ids = [point_id]
 
-        embeddings = list(self.qdrant_client.embed(
-            texts=texts,
-            model=self.embedding_model_name
-        ))
+        embeddings = [
+            models.Document(text=text, model=self.embedding_model_name)
+            for text in texts
+        ]
 
         points_to_upsert = list()
         for i in range(len(points_ids)):
@@ -414,7 +530,7 @@ class QdrantClientFastembed(QdrantClientABC):
         client_request_type: ClientRequestType,
         query: str,
         top_k: int = 5,
-    ) -> list[QdrantCachedQuery]:
+    ) -> List[QdrantCachedQuery]:
         collection_type: QdrantCollectionType = qdrant_collection_type_from_request_type(client_request_type)
         points: list[QdrantScoredPoint] = self.qdrant_client.query_points(
             collection_name=self.collection_name(library_name=library_name, client_request_type=client_request_type),
@@ -514,6 +630,10 @@ class QdrantClientCloud(QdrantClientABC):
                         self.qdrant_client.create_collection(
                             collection_name=collection_name__analysis,
                         )
+        self._app_context: Optional[AppContext] = None
+
+    def set_app_context(self, app_context):
+        self._app_context = app_context
     
     def upsert(
         self,

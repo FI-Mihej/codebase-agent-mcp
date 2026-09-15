@@ -58,6 +58,9 @@ def test_codebase_start_job_related_files_search_prompt_requests_ranked_json(tmp
     assert "fs__list_files" in prompt
     assert "fs__read_text_file" in prompt
     assert "fs__search_text_in_files" in prompt
+    assert "fs__glob" in prompt
+    assert "fs__grep" in prompt
+    assert "fs__get_normalized_full_path" in prompt
     assert "Where is token refresh implemented?" in prompt
 
 
@@ -90,6 +93,9 @@ def test_prompt_construction_includes_required_context(tmp_path: Path) -> None:
     assert "fs__list_files" in prompt
     assert "fs__read_text_file" in prompt
     assert "fs__search_text_in_files" in prompt
+    assert "fs__glob" in prompt
+    assert "fs__grep" in prompt
+    assert "fs__get_normalized_full_path" in prompt
     assert "How do I implement X?" in prompt
     assert "Clearly distinguish **verified facts** from **inferred conclusions**." in prompt
 
@@ -120,7 +126,7 @@ def test_prompt_construction_includes_denied_tools(tmp_path: Path) -> None:
         user_query="How do I implement X?",
     )
 
-    assert "Use the following tools: fs__list_files, fs__search_text_in_files" in prompt
+    assert "Use the following tools: fs__get_normalized_full_path, fs__glob, fs__grep, fs__list_files, fs__search_text_in_files" in prompt
     assert "fs__read_text_file" not in prompt
 
 

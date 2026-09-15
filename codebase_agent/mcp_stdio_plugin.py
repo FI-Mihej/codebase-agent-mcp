@@ -24,7 +24,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -34,6 +34,8 @@ from pydantic import BaseModel, Field
 from codebase_agent.config import PluginConfig
 from codebase_agent.io_debug import IODebugLogger, logged_io_streams
 from codebase_agent.types import ClientRequestType, PluginABC, ToolResult
+if TYPE_CHECKING:
+    from codebase_agent.app_context import AppContext
 
 
 class StdioMCPPluginConfig(BaseModel):
@@ -65,6 +67,10 @@ class StdioMCPPlugin(PluginABC):
         self._stdio_config = stdio_config
         self._session = session
         self._tools = tools
+        self._app_context: Optional[AppContext] = None
+
+    def set_app_context(self, app_context):
+        self._app_context = app_context
 
     @classmethod
     async def create(

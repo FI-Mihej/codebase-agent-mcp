@@ -4,19 +4,19 @@
     "api_key": "[EMPTY]",
     "model": "local-model-name",
     "temperature": 0.2,
-    "reasoning_allowed": false,
-    "reasoning_effort": "none",
-    "max_tokens": 65536,
+    "reasoning_allowed": true,
+    "reasoning_effort": "low",
+    "max_tokens": 16384,
     "context_compression_threshold": 0.6,
-    "timeout_seconds": 600,
-    "max_tool_rounds": 120,
-    "max_tool_response_bytes": 5120,
+    "timeout_seconds": 3000,
+    "max_tool_rounds": 2000,
     "built_in_plugins": [
       {
         "name": "qdrant_fastembed",
         "allowed": false,
         "configuration": {
           "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+          "recreate_incompatible_collections": true,
           "init": {
             "url": "http://localhost:6333"
           }
@@ -42,6 +42,17 @@
         "configuration": {
           "max_file_bytes": 1048576,
           "max_search_results": 100
+        }
+      },
+      {
+        "name": "built_in_subagents",
+        "allowed": true,
+        "denied_tools": [
+          "subagent__map_reduce__single_file"
+        ],
+        "llm_agent_instructions": "Break down large tasks into small subtasks and delegate the resulting subtasks to `subagent__generic`.",
+        "configuration": {
+          "concurrency_limit": 0
         }
       },
       {

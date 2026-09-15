@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from codebase_agent.built_in_plugins.local_fs_tools import LocalFilesystemTools
+from codebase_agent.built_in_plugins.sub_agents import SubagentsTools
 from codebase_agent.built_in_plugins.qdrant_client import QdrantClientABC, qdrant_client_factory
 from codebase_agent.config import AgentConfig, PluginConfig
 from codebase_agent.io_debug import IODebugLogger
@@ -44,6 +45,7 @@ class PluginBundle:
     plugins: Dict[str, PluginABC]
     qdrant_client: QdrantClientABC
     local_fs_tools: LocalFilesystemTools
+    subagents: SubagentsTools
     text_file_tools: Optional[StdioMCPPlugin] = None
 
 
@@ -52,6 +54,7 @@ async def build_plugin_bundle(config: AgentConfig, exit_stack: AsyncExitStack) -
 
     qdrant_client = qdrant_client_factory(config)
     local_fs_tools = LocalFilesystemTools(config)
+    subagents = SubagentsTools(config)
     io_debug_logger = (
         IODebugLogger(config.io_debug.log_path)
         if config.io_debug.enabled and config.io_debug.server_plugins
@@ -60,6 +63,7 @@ async def build_plugin_bundle(config: AgentConfig, exit_stack: AsyncExitStack) -
     plugins: Dict[str, PluginABC] = {
         qdrant_client.name(): qdrant_client,
         local_fs_tools.name(): local_fs_tools,
+        subagents.name(): subagents,
     }
 
     text_file_plugin_config = config.openai_compatible.allowed_built_in_plugin_config(
@@ -91,6 +95,7 @@ async def build_plugin_bundle(config: AgentConfig, exit_stack: AsyncExitStack) -
         plugins=plugins,
         qdrant_client=qdrant_client,
         local_fs_tools=local_fs_tools,
+        subagents=subagents,
         text_file_tools=text_file_plugin,
     )
 

@@ -2,13 +2,13 @@
 # coding=utf-8
 
 # Copyright © 2026 ButenkoMS. All rights reserved. Contacts: <gtalk@butenkoms.space>
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from pathlib import PurePath, PureWindowsPath
-from typing import Any, Annotated
+from typing import Any, Annotated, Optional, TYPE_CHECKING
 from pydantic import Field
 
 import anyio
@@ -34,10 +34,10 @@ from mcp.shared.context import RequestContext, LifespanContextT
 
 from codebase_agent import app_context
 from codebase_agent.config import (
-    AgentConfig, 
-    load_config, 
-    validate_library_path, 
-    ensure_config_exists, 
+    AgentConfig,
+    load_config,
+    validate_library_path,
+    ensure_config_exists,
     get_app_data_dir_path,
 )
 from codebase_agent.jobs import CodebaseAnalysisJobManager
@@ -49,10 +49,13 @@ from codebase_agent.prompts import (
     build_prompt_for__codebase_start_job_related_files_search,
     build_prompt_for__codebase_start_job_analysis,
     build_prompt_for__query_granularity_validation,
+    build_openai_response_format_for__query_granularity_validation,
 )
 from codebase_agent.types import (
+    CodebaseListLibrariesResult,
     CodebaseAgentError,
     EmptyQueryError,
+    JobType,
     MalformedOpenAICompatibleResponse,
     QueryGranularityError,
     UnknownLibraryError,
@@ -66,14 +69,47 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 import re
 from pathlib import Path
+import os
 
-from codebase_agent.logging_config import setup_logging
-setup_logging()
-import logging
+if TYPE_CHECKING:
+    from logging import Logger
+    logger: Logger = None
+else:
+    logger = None
 
 
-logger = logging.getLogger(__name__)
-logger.info("MCP-server started")
+def init_logger(
+    agent_config: Optional[AgentConfig] = None,
+):
+    from codebase_agent.logging_config import setup_logging
+    level = None
+    if agent_config is not None:
+        level = agent_config.logger.get_logging_level()
+
+    setup_logging(level=level)
+    import logging
+
+    global logger
+    logger = logging.getLogger(__name__)
+    logger.info("MCP-server started")
+
+
+init_logger()
+
+
+def _rebuild_fastmcp_settings_model() -> None:
+    """Resolve FastMCP Settings forward refs before pydantic-settings reads them."""
+
+    try:
+        from mcp.server.fastmcp.server import Settings as FastMCPSettings
+    except ImportError:
+        logger.warning("FastMCP Settings model is not available for rebuild", exc_info=True)
+        return
+
+    try:
+        FastMCPSettings.model_rebuild()
+    except Exception:
+        logger.warning("FastMCP Settings model rebuild failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -84,23 +120,61 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         config = load_config()
         analysis_jobs = CodebaseAnalysisJobManager()
         plugin_bundle = await build_plugin_bundle(config, exit_stack)
-        yield AppContext(
+        app_context: AppContext = AppContext(
             config=config,
             analysis_jobs=analysis_jobs,
             plugins=plugin_bundle.plugins,
             qdrant_client=plugin_bundle.qdrant_client,
             local_fs_tools=plugin_bundle.local_fs_tools,
+            subagents=plugin_bundle.subagents,
             text_file_tools=plugin_bundle.text_file_tools,
         )
+        for plugin in plugin_bundle.plugins.values():
+            plugin.set_app_context(app_context=app_context)
+        
+        yield app_context
 
 
-mcp = FastMCP("codebase-agent", lifespan=app_lifespan)
+def get__codebase_agent_mcp_transport() -> str:
+    result: str = str(os.environ.get('CODEBASE_AGENT_MCP_TRANSPORT', "stdio"))
+    logger.info(f'CODEBASE_AGENT_MCP_TRANSPORT: `{result}` (type: `{type(result)}`)')
+    return result
 
 
-def codebase_list_libraries_from_config(config: AgentConfig) -> dict[str, list[str]]:
+def get__codebase_agent_mcp_host() -> str:
+    result: str = str(os.environ.get('CODEBASE_AGENT_MCP_HOST', "127.0.0.1"))
+    logger.info(f'CODEBASE_AGENT_MCP_HOST: `{result}` (type: `{type(result)}`)')
+    return result
+
+
+def get__codebase_agent_mcp_port() -> str:
+    result: int = int(os.environ.get('CODEBASE_AGENT_MCP_PORT', "8000"))
+    logger.info(f'CODEBASE_AGENT_MCP_PORT: `{result}` (type: `{type(result)}`)')
+    return result
+
+
+_rebuild_fastmcp_settings_model()
+mcp = FastMCP(
+    "codebase-agent", 
+    lifespan=app_lifespan, 
+    host=get__codebase_agent_mcp_host(), 
+    port=get__codebase_agent_mcp_port(),
+)
+logger.info(f"FastMCP instance created.")
+
+
+LLM_AGENT_INSTRUCTIONS__LIST_LIBRARIES = (
+    "Use `codebase_start_job_related_files_search` tool in order to locate relevant files within the specified `library_name`. Use `codebase_start_job_analysis` tool in order to analyze the located files within the specified `library_name`. If a query concerns multiple different `library_name`-s, you must address them through separate, sequential requests for each `library_name`."
+)
+
+
+def codebase_list_libraries_from_config(config: AgentConfig) -> CodebaseListLibrariesResult:
     """Return configured library names in configuration order."""
 
-    return {"libraries": [library.name for library in config.allowed_libraries()]}
+    return {
+        "libraries": [library.name for library in config.allowed_libraries()],
+        "llm_agent_instructions": LLM_AGENT_INSTRUCTIONS__LIST_LIBRARIES,
+    }
 
 
 async def codebase_start_job_analysis_with_config(
@@ -109,6 +183,7 @@ async def codebase_start_job_analysis_with_config(
     config: AgentConfig,
     library_name: str,
     query: str,
+    job_id: str | None = None,
     client: OpenAICompatibleClient | None = None,
 ) -> str:
     """Validate a request and delegate one fresh consultation to OpenAI compatible."""
@@ -131,6 +206,7 @@ async def codebase_start_job_analysis_with_config(
     openai_compatible_client = client or OpenAICompatibleClient(config.openai_compatible)
     return await openai_compatible_client.consult(
         app_context=app_context,
+        job_id=job_id,
         library=library,
         client_request_type=ClientRequestType.analysis,
         system_prompt=system_prompt,
@@ -144,6 +220,7 @@ async def codebase_start_job_related_files_search_with_config(
     config: AgentConfig,
     library_name: str,
     query: str,
+    job_id: str | None = None,
     client: OpenAICompatibleClient | None = None,
 ) -> dict[str, Any]:
     """Find ranked file candidates related to a task using one fresh OpenAI compatible chat."""
@@ -166,6 +243,7 @@ async def codebase_start_job_related_files_search_with_config(
     openai_compatible_client = client or OpenAICompatibleClient(config.openai_compatible)
     raw_response = await openai_compatible_client.consult(
         app_context=app_context,
+        job_id=job_id,
         library=library,
         client_request_type=ClientRequestType.find_files,
         system_prompt=system_prompt,
@@ -180,6 +258,7 @@ async def codebase_start_job_related_files_search_job_with_config(
     config: AgentConfig,
     library_name: str,
     query: str,
+    job_id: str | None = None,
     client: OpenAICompatibleClient | None = None,
 ) -> str:
     """Run related-file discovery and serialize the structured result for job storage."""
@@ -189,8 +268,9 @@ async def codebase_start_job_related_files_search_job_with_config(
     result: dict[str, Any]
     try:
         await _validate_query_granularity(
+            app_context=app_context,
             client=openai_compatible_client,
-            config=config,
+            job_id=job_id,
             tool_name="codebase_start_job_related_files_search",
             query=normalized_query,
         )
@@ -199,6 +279,7 @@ async def codebase_start_job_related_files_search_job_with_config(
             config=config,
             library_name=library_name,
             query=normalized_query,
+            job_id=job_id,
             client=openai_compatible_client,
         )
     except DirectErrorResponseForClientLLM as ex:
@@ -206,7 +287,7 @@ async def codebase_start_job_related_files_search_job_with_config(
         result = {
             "error": message,
         }
-    
+
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -216,6 +297,7 @@ async def codebase_start_job_analysis_job_with_config(
     config: AgentConfig,
     library_name: str,
     query: str,
+    job_id: str | None = None,
     client: OpenAICompatibleClient | None = None,
 ) -> str:
     """Run analysis after validating that the request is granular enough."""
@@ -225,8 +307,9 @@ async def codebase_start_job_analysis_job_with_config(
     result: dict[str, Any]
     try:
         await _validate_query_granularity(
+            app_context=app_context,
             client=openai_compatible_client,
-            config=config,
+            job_id=job_id,
             tool_name="codebase_start_job_analysis",
             query=normalized_query,
         )
@@ -235,6 +318,7 @@ async def codebase_start_job_analysis_job_with_config(
             config=config,
             library_name=library_name,
             query=normalized_query,
+            job_id=job_id,
             client=openai_compatible_client,
         )
     except DirectErrorResponseForClientLLM as ex:
@@ -242,7 +326,7 @@ async def codebase_start_job_analysis_job_with_config(
         result = json.dumps({
             "error": message,
         })
-    
+
     return result
 
 
@@ -260,7 +344,7 @@ def _validate_start_job_inputs(*, config: AgentConfig, library_name: str, query:
 
 
 @mcp.tool()
-def codebase_list_libraries() -> dict[str, list[str]]:
+def codebase_list_libraries() -> CodebaseListLibrariesResult:
     """Return the public names of local libraries/codebases available for analysis."""
 
     try:
@@ -295,11 +379,10 @@ async def codebase_start_job_related_files_search(
             library_name=library_name,
             query=query,
             runner=codebase_start_job_related_files_search_job_with_config,
+            job_type=JobType.related_files_search.value,
         )
-        result["message"] = (
-            "codebase_start_job_related_files_search starts an asynchronous job. Use "
-            "codebase_get_job_status and codebase_get_job_result with the returned job_id. "
-            "The completed result is a JSON string containing files and notes."
+        result["llm_agent_instructions"] = (
+            "`codebase_start_job_related_files_search` starts an asynchronous job. Use `codebase_get_job_status` with the returned `job_id` to poll the status while the request is being processed. If a query concerns multiple different `library_name`-s, you must address them through separate, sequential requests for each `library_name`."
         )
         return result
     except CodebaseAgentError as exc:
@@ -332,10 +415,10 @@ async def codebase_start_job_analysis(
             library_name=library_name,
             query=query,
             runner=codebase_start_job_analysis_job_with_config,
+            job_type=JobType.analysis.value,
         )
-        result["message"] = (
-            "codebase_start_job_analysis starts an asynchronous job. Use "
-            "codebase_get_job_status and codebase_get_job_result with the returned job_id."
+        result["llm_agent_instructions"] = (
+            "`codebase_start_job_analysis` starts an asynchronous job. Use `codebase_get_job_status` with the returned `job_id` to poll the status while the request is being processed. If a query concerns multiple different `library_name`-s, you must address them through separate, sequential requests for each `library_name`."
         )
         return result
     except CodebaseAgentError as exc:
@@ -350,7 +433,7 @@ async def codebase_get_job_status(
     ],
     ctx: Context[ServerSession, AppContext],
 ) -> dict[str, Any]:
-    """**Get async analysis job status. Checks the progress of both the `codebase_start_job_related_files_search` and `codebase_start_job_analysis` jobs. You must poll using `codebase_get_job_status` tool until `success`/`failure`. This tool internally waits up to 50s/request. Avoid assuming failure before terminal status. You are forbidden to finish response while polling is running.**"""
+    """**Returns the async analysis job status. Checks the progress of both the `codebase_start_job_related_files_search` and `codebase_start_job_analysis` jobs. You must poll using `codebase_get_job_status` tool until `success`/`failure`. This tool internally waits up to 50s/request. Avoid assuming failure before terminal status. You are forbidden to finish response while polling is running.**"""
 
     app_context: AppContext = ctx.request_context.lifespan_context
     try:
@@ -371,9 +454,50 @@ async def codebase_get_job_result(
 
     app_context: AppContext = ctx.request_context.lifespan_context
     try:
-        return await app_context.analysis_jobs.get_result(job_id, load_config().jobs)
+        config = load_config()
+        job_type = await app_context.analysis_jobs.get_job_type(job_id, config.jobs)
+        result = await app_context.analysis_jobs.get_result(job_id, config.jobs)
+        llm_agent_instructions = _get_job_result_llm_agent_instructions(
+            job_type,
+            result.get("status"),
+            result.get("llm_agent_instructions"),
+        )
+        if llm_agent_instructions is not None:
+            result["llm_agent_instructions"] = llm_agent_instructions
+        return result
     except CodebaseAgentError as exc:
         _raise_mcp_error(exc)
+
+
+def _get_job_result_llm_agent_instructions(
+    job_type: str | None,
+    status: Any = None,
+    existing_instructions: Any = None,
+) -> str | None:
+    if (
+        status in {"queued", "running"}
+        and isinstance(existing_instructions, str)
+        and existing_instructions.strip()
+    ):
+        return existing_instructions
+
+    job_type_instructions_by_type = {
+        JobType.related_files_search.value: (
+            """This is the result of `codebase_start_job_related_files_search`. This result is sufficient for locating relevant files, but it is insufficient for drawing conclusions: the files were not read and analyzed in their entirety; instead, they were processed only until the first piece of sufficient evidence was found to include the file in the list of relevant files. The LLM agent must provide the file paths obtained from this result as part of the context for the `codebase_start_job_analysis` tool call to avoid redundant searches for relevant files within the `codebase_start_job_analysis` tool call. The LLM agent must call `codebase_start_job_analysis` with an appropriate request and context in query in order to perform an actual deep analysis within relevant files. If a query concerns multiple different `library_name`-s, you must address them through separate, sequential requests for each `library_name`. CRITICAL: This search result contains ONLY file paths with brief notes; you (LLM agent) are FORBIDDEN from answering user questions about code logic or structure based on this output. You MUST call codebase_start_job_analysis to proceed."""
+        ),
+        JobType.analysis.value: (
+            "This is result of `codebase_start_job_analysis`. This result is sufficient for drawing conclusions. The LLM agent allowed to use this result as implementation guidance. If more codebase "
+            "context is required, start another focused related-files search using `codebase_start_job_related_files_search` or analysis job using `codebase_start_job_analysis`. If a query concerns multiple different `library_name`-s, you must address them through separate, sequential requests for each `library_name`."
+        ),
+    }
+    job_type_instructions = job_type_instructions_by_type.get(job_type)
+    if not isinstance(existing_instructions, str) or not existing_instructions.strip():
+        return job_type_instructions
+
+    if job_type_instructions is None:
+        return existing_instructions
+
+    return f"{existing_instructions}\n\n{job_type_instructions}"
 
 
 @mcp.tool()
@@ -395,19 +519,24 @@ async def codebase_cancel_job(
 
 async def _validate_query_granularity(
     *,
+    app_context: AppContext,
     client: OpenAICompatibleClient,
-    config: AgentConfig,
+    job_id: str | None = None,
     tool_name: str,
     query: str,
 ) -> None:
     """Ask the local model whether the start-tool request is appropriately scoped."""
 
+    config: AgentConfig = app_context.config
     raw_response = await client.classify_without_tools(
+        app_context=app_context,
+        job_id=job_id,
         system_prompt=build_prompt_for__query_granularity_validation(
             tool_name=tool_name,
             openai_compatible=config.openai_compatible,
         ),
         query=query.strip(),
+        response_format=build_openai_response_format_for__query_granularity_validation(),
     )
     validation = _parse_query_granularity_validation_response(raw_response)
     if validation["valid"]:
@@ -526,7 +655,7 @@ def _strip_json_response_fence(raw_response: str) -> str:
             last_line = lines[-1].strip()
             if last_line.endswith(fence):
                 last_line = last_line[: -len(fence)]
-            
+
             lines = [first_line] + lines[1:-1] + [last_line]
             payload = "\n".join(lines).strip()
         elif first_line.startswith(fence):
@@ -534,10 +663,10 @@ def _strip_json_response_fence(raw_response: str) -> str:
             last_line = lines[-1].strip()
             if last_line.endswith(fence):
                 last_line = last_line[: -len(fence)]
-            
+
             lines = [first_line] + lines[1:-1] + [last_line]
             payload = "\n".join(lines).strip()
-    
+
     return payload
 
 
@@ -574,7 +703,7 @@ def console_script__ensure_qdrant_models() -> None:
     config_path: Path = ensure_config_exists()
 
     from codebase_agent.built_in_plugins.qdrant_client import (
-        apply_qdrant_cache_dir_path, 
+        apply_qdrant_cache_dir_path,
         ensure_qdrant_cache_dir_path,
         ensure_qdrant_models,
     )
@@ -619,25 +748,31 @@ def console_script__sanitize_library_codebases() -> None:
     print("Functionality will be added soon - stay tuned for updates.")
     config_path: Path = ensure_config_exists()
 
+
 def console_script__index_dependency_libraries() -> None:
     print("Functionality will be added soon - stay tuned for updates.")
     config_path: Path = ensure_config_exists()
 
-def main() -> None:
-    """Run the MCP server over stdio."""
 
+def main() -> None:
     config_path: Path = ensure_config_exists()
 
     from codebase_agent.built_in_plugins.qdrant_client import apply_qdrant_cache_dir_path, ensure_qdrant_cache_dir_path
 
     apply_qdrant_cache_dir_path(ensure_qdrant_cache_dir_path())
 
-    config = load_config()
-    if config.io_debug.enabled and config.io_debug.client_server:
+    config: AgentConfig = load_config()
+    init_logger(agent_config=config)
+
+    codebase_agent_mcp_transport = get__codebase_agent_mcp_transport()
+    if codebase_agent_mcp_transport not in {"stdio", "sse", "streamable-http"}:
+        raise RuntimeError("Wrong server type.")
+    
+    if ("stdio" == codebase_agent_mcp_transport) and config.io_debug.enabled and config.io_debug.client_server:
         anyio.run(_run_stdio_with_io_debug, config)
         return
 
-    mcp.run(transport="stdio")
+    mcp.run(transport=codebase_agent_mcp_transport)
 
 
 if __name__ == "__main__":

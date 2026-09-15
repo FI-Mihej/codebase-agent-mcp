@@ -20,11 +20,15 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from codebase_agent.config import get_local_log_path
+from typing import Optional
 
 
-def setup_logging():
+def setup_logging(
+    level: Optional[int] = None,
+):
+    level = level or logging.WARNING
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         handlers=[
             RotatingFileHandler(
@@ -36,3 +40,5 @@ def setup_logging():
         ],
         force=True,
     )
+    for name in ("openai", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)

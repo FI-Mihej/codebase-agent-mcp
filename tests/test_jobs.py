@@ -15,6 +15,7 @@ from codebase_agent.types import (
     ClientRequestType,
     ConcurrentJobLimitError,
     InvalidJobIdError,
+    JobType,
     OpenAICompatibleContextOverflowError,
     QueryGranularityError,
     ToolResult,
@@ -136,10 +137,10 @@ def test_background_job_preserves_structured_error(tmp_path: Path) -> None:
         result = await manager.get_result(started["job_id"])
 
         assert result["status"] == "error"
-        assert result["error"] == {
-            "code": "unexpected_analysis_error",
-            "message": "boom",
-        }
+        assert result["error"]["type"] == "ValueError"
+        assert result["error"]["code"] == "unexpected_analysis_error"
+        assert result["error"]["message"] == "boom"
+        assert "ValueError: boom" in result["error"]["traceback"]
 
     asyncio.run(run())
 
@@ -316,7 +317,7 @@ def test_job_lookup_returns_not_found_for_missing_job(tmp_path: Path) -> None:
     async def run() -> None:
         manager = CodebaseAnalysisJobManager()
         config = _config(tmp_path)
-        missing_job_id = "0" * 32
+        missing_job_id = "0" * 11
         expected_payload = {
             "job_id": missing_job_id,
             "status": "not_found",
@@ -343,7 +344,7 @@ def test_job_lookup_rejects_malformed_job_id(tmp_path: Path) -> None:
             try:
                 await lookup("58c45ca50ab24fb3bcc3c7b3b19e3", config.jobs)
             except InvalidJobIdError as exc:
-                assert "exact 32-character lowercase hex id" in str(exc)
+                assert "exact 11-character value" in str(exc)
             else:
                 raise AssertionError("Expected InvalidJobIdError")
 
@@ -374,6 +375,34 @@ def test_sqlite_job_creation_and_retrieval(tmp_path: Path) -> None:
             ).fetchone()
 
         assert row == ("example-lib", "How?", "done", "stored answer")
+
+    asyncio.run(run())
+
+
+def test_job_type_is_persisted_and_retrieved(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = _config(tmp_path)
+        first_manager = CodebaseAnalysisJobManager()
+
+        async def fake_runner(**kwargs: Any) -> str:
+            return "stored answer"
+
+        started = await first_manager.start_job(
+            app_context=_app_context(config, first_manager),
+            config=config,
+            library_name="example-lib",
+            query="How?",
+            runner=fake_runner,
+            job_type=JobType.analysis.value,
+        )
+        await asyncio.sleep(0.01)
+
+        second_manager = CodebaseAnalysisJobManager()
+
+        assert (
+            await second_manager.get_job_type(started["job_id"], config.jobs)
+            == JobType.analysis.value
+        )
 
     asyncio.run(run())
 
@@ -434,8 +463,8 @@ def test_stale_running_job_from_previous_process_is_converted_to_error(tmp_path:
     async def run() -> None:
         config = _config(tmp_path)
         seed_manager = CodebaseAnalysisJobManager()
-        await seed_manager.get_status("0" * 32, config.jobs)
-        stale_job_id = "1" * 32
+        await seed_manager.get_status("0" * 11, config.jobs)
+        stale_job_id = "1" * 11
         now = time.time()
         with sqlite3.connect(config.jobs.sqlite_path) as connection:
             connection.execute(
@@ -589,6 +618,94 @@ def test_result_returns_after_timeout_with_latest_partial_state(tmp_path: Path) 
 
         assert result["status"] == "running"
         assert result["partial_result"] == "Job running"
+
+    asyncio.run(run())
+
+
+def test_background_job_reports_subllm_progress_and_preserves_it_on_completion(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = _config(tmp_path)
+        manager = CodebaseAnalysisJobManager()
+
+        async def fake_runner(**kwargs: Any) -> str:
+            await manager.report_subllm_progress(
+                kwargs["job_id"],
+                {
+                    "input_bytes_used_by_subllm": 11,
+                    "output_bytes_generated_by_subllm": 7,
+                },
+            )
+            await manager.report_subllm_progress(
+                kwargs["job_id"],
+                {
+                    "tool_calls_made_by_subllm": 2,
+                    "llm_context_compations_made_by_subharness": 1,
+                },
+            )
+            return "done"
+
+        started = await manager.start_job(
+            app_context=_app_context(config, manager),
+            config=config,
+            library_name="example-lib",
+            query="How?",
+            runner=fake_runner,
+        )
+        await asyncio.sleep(0.01)
+
+        status = await manager.get_status(started["job_id"], config.jobs)
+
+        assert status["status"] == "done"
+        assert status["progress"]["input_bytes_used_by_subllm"] == 11
+        assert status["progress"]["output_bytes_generated_by_subllm"] == 7
+        assert status["progress"]["tool_calls_made_by_subllm"] == 2
+        assert status["progress"]["llm_context_compations_made_by_subharness"] == 1
+
+    asyncio.run(run())
+
+
+def test_parallel_jobs_keep_separate_progress_and_update_global_counters(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = _config(tmp_path, max_concurrent_jobs=2)
+        manager = CodebaseAnalysisJobManager()
+
+        async def fake_runner(**kwargs: Any) -> str:
+            increment = 3 if kwargs["query"] == "First?" else 5
+            await asyncio.sleep(0)
+            await manager.report_subllm_progress(
+                kwargs["job_id"],
+                {"input_bytes_used_by_subllm": increment},
+            )
+            await asyncio.sleep(0)
+            return kwargs["query"]
+
+        app_context = _app_context(config, manager)
+        first = await manager.start_job(
+            app_context=app_context,
+            config=config,
+            library_name="example-lib",
+            query="First?",
+            runner=fake_runner,
+        )
+        second = await manager.start_job(
+            app_context=app_context,
+            config=config,
+            library_name="example-lib",
+            query="Second?",
+            runner=fake_runner,
+        )
+        await asyncio.sleep(0.02)
+
+        first_status = await manager.get_status(first["job_id"], config.jobs)
+        second_status = await manager.get_status(second["job_id"], config.jobs)
+
+        assert first_status["progress"]["input_bytes_used_by_subllm"] == 3
+        assert second_status["progress"]["input_bytes_used_by_subllm"] == 5
+        assert manager.global_progress_counters["input_bytes_used_by_subllm"] == 8
+
+        snapshot = manager.global_progress_counters
+        snapshot["input_bytes_used_by_subllm"] = 0
+        assert manager.global_progress_counters["input_bytes_used_by_subllm"] == 8
 
     asyncio.run(run())
 

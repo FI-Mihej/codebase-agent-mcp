@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from abc import ABC
 from enum import Enum
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
+
+try:
+    from typing_extensions import TypedDict
+except ImportError:  # pragma: no cover - typing_extensions is provided by pydantic installs.
+    from typing import TypedDict
 
 
 ToolBackend = Literal["none", "openai_tools"]
@@ -140,12 +145,19 @@ class DirectErrorResponseForClientLLM(CodebaseAgentError):
 
 
 @dataclass(frozen=True)
-class ToolContext:
+class LocalFSToolsContext:
     """Runtime limits for local tools exposed to OpenAI compatible."""
 
     root: Path
     max_file_bytes: int
     max_search_results: int
+    denied_tools: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class SubagentsToolsContext:
+    root: Path
+    concurrency_limit: int
     denied_tools: frozenset[str] = frozenset()
 
 
@@ -155,9 +167,15 @@ class ToolResult(TypedDict, total=False):
     error: dict[str, str]
 
 
+class CodebaseListLibrariesResult(TypedDict):
+    libraries: list[str]
+    llm_agent_instructions: str
+
+
 class ClientRequestType(Enum):
     find_files = "find_files"
     analysis = "analysis"
+    subagent = "subagent"
 
 
 class PluginABC(ABC):
@@ -201,3 +219,26 @@ class PluginABC(ABC):
     
     def allowed_tool_definitions(self) -> list[dict[str, Any]]:
         ...
+
+    def set_app_context(self, app_context):
+        ...
+
+
+class JobType(Enum):
+    related_files_search = "related_files_search"
+    analysis = "analysis"
+
+
+class BuildInPluginToolsPrefixes(Enum):
+    fs = "fs__"
+    text_file = "text_file__"
+    vectordb = "vectordb__"
+
+
+@dataclass
+class ChatCompletionTokenUsage:
+    """Token usage statistics for a chat completion request."""
+
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0

@@ -4,23 +4,27 @@ import asyncio
 import copy
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import httpx
 import pytest
+from pydantic import TypeAdapter
 from openai import BadRequestError
 from openai.types.chat import ChatCompletion
 
 from codebase_agent.config import AgentConfig, OpenAICompatibleConfig, LibraryConfig
 from codebase_agent.app_context import AppContext
 from codebase_agent.openai_compatible_client import OpenAICompatibleClient
+from codebase_agent.progress import reset_progress_reporter, set_progress_reporter
 from codebase_agent.built_in_plugins.local_fs_tools import LocalFilesystemTools
 from codebase_agent.jobs import CodebaseAnalysisJobManager
 from codebase_agent.server import (
+    LLM_AGENT_INSTRUCTIONS__LIST_LIBRARIES,
     codebase_start_job_analysis_job_with_config,
     codebase_start_job_analysis_with_config,
     codebase_start_job_related_files_search_job_with_config,
     codebase_start_job_related_files_search_with_config,
+    codebase_list_libraries,
     codebase_list_libraries_from_config,
 )
 from codebase_agent.built_in_plugins.qdrant_client import QdrantClientABC
@@ -253,7 +257,14 @@ def _mock_openai_client(config: AgentConfig, completion_create: Any) -> OpenAICo
 
 
 def test_codebase_list_libraries_from_config(tmp_path: Path) -> None:
-    assert codebase_list_libraries_from_config(_config(tmp_path)) == {"libraries": ["example-lib"]}
+    result = codebase_list_libraries_from_config(_config(tmp_path))
+
+    assert result == {
+        "libraries": ["example-lib"],
+        "llm_agent_instructions": LLM_AGENT_INSTRUCTIONS__LIST_LIBRARIES,
+    }
+    return_annotation = get_type_hints(codebase_list_libraries)["return"]
+    assert TypeAdapter(return_annotation).validate_python(result) == result
 
 
 def test_unknown_library_handling(tmp_path: Path) -> None:
@@ -324,6 +335,79 @@ def test_filesystem_sandbox_allows_absolute_path_inside_root(tmp_path: Path) -> 
     assert result["result"]["content"] == "inside"
 
 
+def test_filesystem_glob_returns_matching_files(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    root = tmp_path / "lib"
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text("print('hello')", encoding="utf-8")
+    (root / "src" / "app.txt").write_text("hello", encoding="utf-8")
+    (root / "src" / "package").mkdir()
+    tools = LocalFilesystemTools(config=config)
+
+    result = tools.execute("example-lib", ClientRequestType.analysis, "fs__glob", {"pattern": "**/*.py"})
+
+    assert result["ok"] is True
+    assert result["result"]["results"] == ["src/app.py"]
+
+
+def test_filesystem_grep_searches_regex_with_include_filter(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    root = tmp_path / "lib"
+    (root / "src").mkdir()
+    (root / "src" / "app.ts").write_text("const logError = true;\n", encoding="utf-8")
+    (root / "src" / "app.tsx").write_text("function renderWidget() {}\n", encoding="utf-8")
+    (root / "src" / "app.js").write_text("const logError = true;\n", encoding="utf-8")
+    tools = LocalFilesystemTools(config=config)
+
+    result = tools.execute(
+        "example-lib",
+        ClientRequestType.analysis,
+        "fs__grep",
+        {"pattern": r"log.*Error|function\s+\w+", "include": "*.{ts,tsx}"},
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["results"] == [
+        {"path": "src/app.ts", "line": 1, "text": "const logError = true;"},
+        {"path": "src/app.tsx", "line": 1, "text": "function renderWidget() {}"},
+    ]
+
+
+def test_filesystem_get_normalized_full_path_accepts_mixed_separators(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    root = tmp_path / "lib"
+    tools = LocalFilesystemTools(config=config)
+
+    result = tools.execute(
+        "example-lib",
+        ClientRequestType.analysis,
+        "fs__get_normalized_full_path",
+        {"path": r"src\package/module.py"},
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["full_path"] == str(root / "src" / "package" / "module.py")
+
+
+@pytest.mark.parametrize("requested_path", [r"C:\outside\secret.txt", "/outside/secret.txt", "../secret.txt"])
+def test_filesystem_get_normalized_full_path_rejects_non_relative_paths(
+    tmp_path: Path,
+    requested_path: str,
+) -> None:
+    config = _config(tmp_path)
+    tools = LocalFilesystemTools(config=config)
+
+    result = tools.execute(
+        "example-lib",
+        ClientRequestType.analysis,
+        "fs__get_normalized_full_path",
+        {"path": requested_path},
+    )
+
+    assert result["ok"] is False
+    assert "outside configured library root" in result["error"]["message"]
+
+
 def test_filesystem_tool_rejects_denied_tool(tmp_path: Path) -> None:
     config = _config_with_denied_tools(tmp_path, ["fs__read_text_file"])
     root = tmp_path / "lib"
@@ -347,17 +431,18 @@ def test_mocked_openai_compatible_response_with_no_tool_calls(tmp_path: Path) ->
     config = _config(tmp_path, tool_backend="none")
     client = _mock_openai_client(config, fake_create)
 
-    result = asyncio.run(
-        codebase_start_job_analysis_with_config(
-            app_context=_app_context(config),
-            config=config,
-            library_name="example-lib",
-            query="How?",
-            client=client,
+    with pytest.raises(DirectErrorResponseForClientLLM) as exc_info:
+        asyncio.run(
+            codebase_start_job_analysis_with_config(
+                app_context=_app_context(config),
+                config=config,
+                library_name="example-lib",
+                query="How?",
+                client=client,
+            )
         )
-    )
 
-    assert result == "Final answer"
+    assert exc_info.value.message == "Final answer"
     assert len(calls) == 2
     assert calls[0]["messages"][-1] == {"role": "user", "content": "How?"}
     assert "tools" not in calls[0]
@@ -374,17 +459,18 @@ def test_openai_tools_without_allowed_builtin_fs_does_not_advertise_filesystem_t
     config = _config_without_built_in_plugins(tmp_path)
     client = _mock_openai_client(config, fake_create)
 
-    result = asyncio.run(
-        codebase_start_job_analysis_with_config(
-            app_context=_app_context(config),
-            config=config,
-            library_name="example-lib",
-            query="How?",
-            client=client,
+    with pytest.raises(DirectErrorResponseForClientLLM) as exc_info:
+        asyncio.run(
+            codebase_start_job_analysis_with_config(
+                app_context=_app_context(config),
+                config=config,
+                library_name="example-lib",
+                query="How?",
+                client=client,
+            )
         )
-    )
 
-    assert result == "Final answer"
+    assert exc_info.value.message == "Final answer"
     assert "tools" not in calls[0]
 
 
@@ -398,17 +484,18 @@ def test_openai_compatible_context_overflow_without_tools_returns_direct_message
     config = _config(tmp_path, tool_backend="none")
     client = _mock_openai_client(config, fake_create)
 
-    result = asyncio.run(
-        codebase_start_job_analysis_with_config(
-            app_context=_app_context(config),
-            config=config,
-            library_name="example-lib",
-            query="How?",
-            client=client,
+    with pytest.raises(DirectErrorResponseForClientLLM) as exc_info:
+        asyncio.run(
+            codebase_start_job_analysis_with_config(
+                app_context=_app_context(config),
+                config=config,
+                library_name="example-lib",
+                query="How?",
+                client=client,
+            )
         )
-    )
 
-    assert "Retry with a narrower request" in result
+    assert "Retry with a narrower request" in exc_info.value.message
 
 
 def test_openai_compatible_detects_lm_studio_context_size_overflow_without_tools(tmp_path: Path) -> None:
@@ -422,23 +509,20 @@ def test_openai_compatible_detects_lm_studio_context_size_overflow_without_tools
     config = _config(tmp_path, tool_backend="none")
     client = _mock_openai_client(config, fake_create)
 
-    result = asyncio.run(
-        codebase_start_job_analysis_with_config(
-            app_context=_app_context(config),
-            config=config,
-            library_name="example-lib",
-            query="How?",
-            client=client,
+    with pytest.raises(DirectErrorResponseForClientLLM) as exc_info:
+        asyncio.run(
+            codebase_start_job_analysis_with_config(
+                app_context=_app_context(config),
+                config=config,
+                library_name="example-lib",
+                query="How?",
+                client=client,
+            )
         )
-    )
 
-    assert "Retry with a narrower request" in result
+    assert "Retry with a narrower request" in exc_info.value.message
 
 
-@pytest.mark.xfail(
-    raises=AttributeError,
-    reason="Current overflow handling reads serialized assistant tool-call messages as SDK objects.",
-)
 def test_openai_compatible_context_overflow_after_tool_round_raises_domain_error(tmp_path: Path) -> None:
     config = _config(tmp_path)
     (config.allowed_libraries()[0].path / "README.md").write_text("hello", encoding="utf-8")
@@ -609,7 +693,7 @@ def test_codebase_start_job_analysis_job_validates_query_before_analysis(tmp_pat
         )
     )
 
-    assert result == "Final answer"
+    assert json.loads(result) == {"error": "Final answer"}
     assert len(calls) == 3
     assert "strict request gatekeeper" in calls[0]["messages"][0]["content"]
     assert "One topic or one context per request" in calls[0]["messages"][0]["content"]
@@ -670,18 +754,19 @@ def test_final_response_persists_compressed_no_tool_result(tmp_path: Path) -> No
 
     app_context = _app_context(config)
 
-    result = asyncio.run(
-        client.consult(
-            app_context=app_context,
-            library=config.allowed_libraries()[0],
-            client_request_type=ClientRequestType.analysis,
-            system_prompt="system",
-            query="How?",
-        )
-    )
-
     raw_content = "<analysis>hidden reasoning</analysis>\nFinal answer\n```tool_call\n{}\n```"
-    assert result == raw_content
+    with pytest.raises(DirectErrorResponseForClientLLM) as exc_info:
+        asyncio.run(
+            client.consult(
+                app_context=app_context,
+                library=config.allowed_libraries()[0],
+                client_request_type=ClientRequestType.analysis,
+                system_prompt="system",
+                query="How?",
+            )
+        )
+
+    assert exc_info.value.message == raw_content
     assert app_context.qdrant_client.upserts == [
         {
             "library_name": "example-lib",
@@ -744,7 +829,7 @@ def test_context_compression_preserves_pending_tool_call(tmp_path: Path) -> None
         assert resumed_messages[1] == {"role": "user", "content": original_prompt}
         assert resumed_messages[2] == {"role": "assistant", "content": "Need README evidence."}
         assert resumed_messages[3] == {
-            "role": "developer",
+            "role": "user",
             "content": "Conversation history was compacted. Continue your work.",
         }
         assert resumed_messages[4]["role"] == "assistant"
@@ -817,6 +902,72 @@ def test_mocked_openai_compatible_response_with_one_fs__read_text_file_tool_call
     tool_message = calls[1]["messages"][-1]
     assert tool_message["role"] == "tool"
     assert "Use Widget." in tool_message["content"]
+
+
+def test_openai_compatible_client_reports_subllm_progress(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    app_context = _app_context(config)
+    library_root = config.allowed_libraries()[0].path
+    (library_root / "README.md").write_text("# Example\nUse Widget.\n", encoding="utf-8")
+    calls: list[dict[str, Any]] = []
+    progress: dict[str, int] = {}
+
+    async def fake_create(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "fs__read_text_file",
+                                        "arguments": '{"path":"README.md"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"role": "assistant", "content": "Use Widget."}}]}
+
+    async def reporter(increments: dict[str, int]) -> None:
+        for key, value in increments.items():
+            progress[key] = progress.get(key, 0) + value
+
+    async def run() -> str:
+        token = set_progress_reporter(reporter)
+        try:
+            client = _mock_openai_client(config, fake_create)
+            return await client.consult(
+                app_context=app_context,
+                library=config.allowed_libraries()[0],
+                client_request_type=ClientRequestType.analysis,
+                system_prompt="system",
+                query="How?",
+            )
+        finally:
+            reset_progress_reporter(token)
+
+    result = asyncio.run(run())
+
+    assert result == "Use Widget."
+    assert len(calls) == 3
+    assert progress["input_bytes_used_by_subllm"] > 0
+    assert progress["output_bytes_generated_by_subllm"] > 0
+    assert progress["tool_calls_made_by_subllm"] == 1
+    assert progress["llm_context_compations_made_by_subharness"] == 1
+    global_counters = app_context.analysis_jobs.global_progress_counters
+    assert global_counters["input_bytes_used_by_subllm"] > 0
+    assert global_counters["output_bytes_generated_by_subllm"] > 0
+    assert global_counters["tool_calls_made_by_subllm"] == 1
+    assert global_counters["llm_context_compations_made_by_subharness"] == 1
 
 
 def test_plugin_error_result_is_passed_to_model_as_tool_message(tmp_path: Path) -> None:
@@ -901,7 +1052,13 @@ def test_denied_tool_is_not_advertised_to_openai_compatible(tmp_path: Path) -> N
 
     assert result == "Final answer"
     advertised_names = {tool["function"]["name"] for tool in calls[0]["tools"]}
-    assert advertised_names == {"fs__list_files", "fs__search_text_in_files"}
+    assert advertised_names == {
+        "fs__list_files",
+        "fs__search_text_in_files",
+        "fs__glob",
+        "fs__grep",
+        "fs__get_normalized_full_path",
+    }
 
 
 def test_denied_tool_call_returns_structured_tool_error(tmp_path: Path) -> None:

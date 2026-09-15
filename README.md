@@ -4,7 +4,9 @@
 
 ![GitHub License](https://img.shields.io/github/license/FI-Mihej/codebase-agent-mcp?color=darkgreen) ![Static Badge](https://img.shields.io/badge/API_status-Stable-darkgreen)
 
-[![codebase-agent-mcp MCP server](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp/badges/score.svg)](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp)
+[![Listed in Awesome MCP Servers](https://img.shields.io/badge/Awesome%20MCP%20Servers-listed-2ea44f)](https://github.com/punkpeye/awesome-mcp-servers)
+
+[![codebase-agent-mcp MCP server](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp/badges/card.svg)](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp)
 
 # CodebaseAgent-MCP
 
@@ -13,6 +15,22 @@ CodebaseAgent-MCP is a token-efficient MCP server for AI coding agents that dele
 It can run against local models such as Gemma or Qwen, as well as inexpensive OpenAI-compatible cloud providers, reducing both latency and token consumption while keeping the primary assistant focused on reasoning and code generation.
 
 Optional Qdrant integration can cache previous retrieval results today and is planned to evolve into semantic retrieval of code entities (files, classes and functions) from connected codebases.
+
+## Subharness features
+
+- Designed specifically for managing small LLMs: it focuses on addressing their specific behavioral characteristics and weaknesses that prevent other harnesses from working with them effectively.
+- Precise conversation-history compaction.
+- LLM anti-stuck mechanism (prevents the model from falling into infinite self-repetition loops).
+- Task completion control (prevents premature termination of work by small LLM)
+- A tree of full-fledged subagents.
+- Both STDIO and HTTP modes.
+- Token-efficient code and dependency analysis for repositories whose files are larger than the connected model's context window.
+- Optional RAG cache through one of the `qdrant_*` built-in plugins.
+- Sandboxed filesystem access scoped to configured library roots.
+- Pluggable external stdio MCP tools.
+- Works with local OpenAI-compatible servers (LM Studio, llama.cpp, vLLM, Sglang, etc.), or compatible hosted APIs.
+- Works with cloud OpenAI-compatible servers (OpenRouter, etc.).
+- Async background jobs with SQLite persistence of results.
 
 ## Why
 
@@ -97,17 +115,6 @@ ClaudeCode + Opus -> CodebaseAgent-MCP -> OpenAI-compatible LLM (either local or
                          +-> external MCP plugins (any MCP-servers of your choice)
 ```
 
-## Features
-
-- Token-efficient code and dependency analysis for repositories whose files are larger than the connected model's context window.
-- Automatic conversation-history compression
-- Optional RAG cache through one of the `qdrant_*` built-in plugins.
-- Sandboxed filesystem access scoped to configured library roots.
-- Pluggable external stdio MCP tools.
-- Works with local OpenAI-compatible servers such as LM Studio, llama.cpp servers, vLLM-compatible endpoints, or compatible hosted APIs.
-- Works with cloud OpenAI-compatible servers.
-- Async background jobs with SQLite persistence of results.
-
 ## How-To Start
 
 1. Install
@@ -176,7 +183,10 @@ CodebaseAgent-MCP works as a client to [Qdrant](https://github.com/qdrant/qdrant
 | Field | Purpose |
 | --- | --- |
 | `model_name` | Embedding model name. Defaults to `sentence-transformers/all-MiniLM-L6-v2` when omitted. |
+| `recreate_incompatible_collections` | Recreates an incompatible application-owned or recognized legacy cache collection. Defaults to `true`. Set to `false` to fail without deleting cached data. |
 | `init` | Keyword arguments passed to `qdrant_client.QdrantClient`, such as `url`, `api_key`, or `cloud_inference`. |
+
+Collections created by `qdrant_fastembed` include application ownership, schema version, embedding model, vector size, and distance in Qdrant collection metadata. Qdrant server 1.16 or newer is required for collection metadata. Compatible pre-metadata collections are adopted without data loss; recognized legacy collections with no vector schema are recreated when `recreate_incompatible_collections` is enabled.
 
 > Before the first use, and after every change to the `"configuration"."model_name"` field in the `qdrant_*` plugin configuration, it is necessary to initialize (download) the model before the next use of the MCP server. The procedure is described below in the "Usage" -> "Qdrant (Optional)" section.
 
@@ -285,10 +295,6 @@ Github repository is a curated public mirror of the project. Active development 
 * Integration of a content sanitization system for prompt injection protection.
 * A configuration field for LLM instructions on how to use connected MCP servers.
 * An internal sub-agent hierarchy for faster LLM operation.
-
-# Glama.AI
-
-[![codebase-agent-mcp MCP server](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp/badges/card.svg)](https://glama.ai/mcp/servers/FI-Mihej/codebase-agent-mcp)
 
 # Cengal
 

@@ -7,6 +7,6 @@ mcp
 openai>=1.0
 pydantic>=2.0
 httpx>=0.25
-qdrant-client[fastembed]
+qdrant-client[fastembed]>=1.16,<2
 cengal-light[cengal__text_processing__encoding_detection, cengal__file_system__app_fs_structure__app_dir_path]~=5.0
-text-file-read-and-refactor-mcp~=1.0
+text-file-read-and-refactor-mcp>=1.16.0,<2

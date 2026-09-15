@@ -26,7 +26,8 @@ import json
 import sqlite3
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+import secrets
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -45,7 +46,18 @@ from codebase_agent.types import (
     InvalidJobIdError,
     UnknownLibraryError,
 )
+from codebase_agent.progress import (
+    SUBLLM_PROGRESS_COUNTERS,
+    SUBLLM_STREAM_PROGRESS_COUNTERS,
+)
 import traceback
+import math
+import string
+from cengal.introspection.inspect import gmsodv
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 JobStatus = Literal["queued", "running", "done", "error", "cancelled", "not_found"]
@@ -59,6 +71,17 @@ INTERRUPTED_ERROR = {
     "code": "interrupted_analysis_job",
     "message": "Analysis job was interrupted by MCP server shutdown or restart before completion.",
 }
+USE_URLSAFE_JOB_ID = True
+_TOKEN_URLSAFE_ALPHABET = frozenset(string.ascii_letters + string.digits + "-_")
+JOB_ID_TOKEN_URLSAFE_NBYTES = 8
+JOB_ID_TOKEN_URLSAFE_EXPECTED_LENGTH = math.ceil(JOB_ID_TOKEN_URLSAFE_NBYTES * 4 / 3)
+
+
+def gen_job_id() -> str:
+    if USE_URLSAFE_JOB_ID:
+        return secrets.token_urlsafe(8)  # Shorter, URL-safe job ID
+    else:
+        return uuid.uuid4().hex
 
 
 def get_db_dir_path() -> Path:
@@ -71,6 +94,7 @@ class AnalysisJob:
     """Mutable state for a single analysis job."""
 
     job_id: str
+    job_type: str | None
     library_name: str
     query: str
     status: JobStatus
@@ -106,6 +130,70 @@ class CodebaseAnalysisJobManager:
         self._initialized_storage_paths: set[Path] = set()
         self._conditions: dict[str, asyncio.Condition] = {}
         self._start_lock = asyncio.Lock()
+        self._global_progress_counters: dict[str, int] = {
+            counter_name: 0 for counter_name in SUBLLM_PROGRESS_COUNTERS
+        }
+
+    @property
+    def global_progress_counters(self) -> dict[str, int]:
+        """Return aggregate sub-LLM counters for this manager instance."""
+
+        return dict(self._global_progress_counters)
+
+    async def report_subllm_progress(
+        self,
+        job_id: str | None,
+        increments: Mapping[str, int],
+    ) -> None:
+        """Attribute increments to one job and to the server-lifetime aggregate."""
+
+        normalized_increments: dict[str, int] = {}
+        for counter_name in SUBLLM_PROGRESS_COUNTERS:
+            raw_increment = increments.get(counter_name)
+            if raw_increment is None:
+                continue
+
+            try:
+                increment = int(raw_increment)
+            except (TypeError, ValueError):
+                continue
+
+            if increment > 0:
+                normalized_increments[counter_name] = increment
+
+        if not normalized_increments:
+            return
+
+        global_counters_updated_num: int = 0
+        for counter_name, increment in normalized_increments.items():
+            self._global_progress_counters[counter_name] += increment
+            if counter_name not in SUBLLM_STREAM_PROGRESS_COUNTERS:
+                global_counters_updated_num += 1
+
+        if global_counters_updated_num:
+            logger.info(f"Global progress conters: \n{gmsodv(self._global_progress_counters, shift_num=1)}")
+        
+        if job_id is None:
+            return
+
+        job = self._jobs.get(job_id)
+        if job is None or job.status not in ACTIVE_STATUSES:
+            return
+
+        job_counters_updated_num: int = 0
+        for counter_name, increment in normalized_increments.items():
+            job.progress[counter_name] = (
+                _progress_counter_value(job.progress, counter_name) + increment
+            )
+            if counter_name not in SUBLLM_STREAM_PROGRESS_COUNTERS:
+                job_counters_updated_num += 1
+
+        if job_counters_updated_num:
+            logger.info(f"Job \"{job.job_id}\" progress conters: \n{gmsodv(job.progress, shift_num=1)}")
+
+        job.touch()
+        self._save_job(job)
+        await self._notify(job_id)
 
     async def start_job(
         self,
@@ -115,6 +203,7 @@ class CodebaseAnalysisJobManager:
         library_name: str,
         query: str,
         runner: AnalysisRunner,
+        job_type: str | None = None,
     ) -> dict[str, Any]:
         """Create a job, persist it, and schedule analysis outside the MCP request path."""
 
@@ -143,18 +232,24 @@ class CodebaseAnalysisJobManager:
                 )
 
             now = time.time()
-            job_id = uuid.uuid4().hex
+            job_id: str
+            if USE_URLSAFE_JOB_ID:
+                job_id = secrets.token_urlsafe(8)  # Shorter, URL-safe job ID
+            else:
+                job_id = uuid.uuid4().hex
+
             job = AnalysisJob(
                 job_id=job_id,
+                job_type=job_type,
                 library_name=library_name,
                 query=normalized_query,
                 status="running",
-                progress={
-                    "phase": "queued",
-                    "message": "Job created",
-                    "completed_steps": 0,
-                    "total_steps": 2,
-                },
+                progress=_progress_payload(
+                    phase="queued",
+                    message="Job created",
+                    completed_steps=0,
+                    total_steps=2,
+                ),
                 created_at=now,
                 updated_at=now,
             )
@@ -215,6 +310,25 @@ class CodebaseAnalysisJobManager:
             job = await self._wait_for_terminal(job, settings)
         return self._result_payload(job)
 
+    async def get_job_type(
+        self,
+        job_id: str,
+        settings: JobConfig | None = None,
+    ) -> str | None:
+        """Return the stored type for a job, if the job exists and has one."""
+
+        settings = settings or self._last_settings
+        self._last_settings = settings
+        _validate_job_id(job_id)
+        self._ensure_storage(settings)
+        self._cleanup(settings)
+
+        job = self._get_job(job_id)
+        if job is None:
+            return None
+
+        return job.job_type
+
     async def cancel(
         self,
         job_id: str,
@@ -236,10 +350,11 @@ class CodebaseAnalysisJobManager:
             return {"job_id": job_id, "status": job.status}
 
         job.cancel_requested = True
-        job.progress = {
-            "phase": "cancelled",
-            "message": "Cancellation requested",
-        }
+        job.progress = _progress_payload(
+            phase="cancelled",
+            message="Cancellation requested",
+            source_progress=job.progress,
+        )
         self._mark_terminal(job, "cancelled")
         if job.task is not None and not job.task.done():
             job.task.cancel()
@@ -259,12 +374,13 @@ class CodebaseAnalysisJobManager:
         semaphore = self._semaphore_for(config.jobs.max_concurrent_jobs)
         if semaphore.locked():
             job.status = "queued"
-            job.progress = {
-                "phase": "queued",
-                "message": "Waiting for an analysis slot",
-                "completed_steps": 0,
-                "total_steps": 2,
-            }
+            job.progress = _progress_payload(
+                phase="queued",
+                message="Waiting for an analysis slot",
+                completed_steps=0,
+                total_steps=2,
+                source_progress=job.progress,
+            )
             job.touch()
             self._save_job(job)
             await self._notify(job.job_id)
@@ -278,12 +394,13 @@ class CodebaseAnalysisJobManager:
 
                 job.status = "running"
                 job.started_at = time.time()
-                job.progress = {
-                    "phase": "running",
-                    "message": "Job running",
-                    "completed_steps": 1,
-                    "total_steps": 2,
-                }
+                job.progress = _progress_payload(
+                    phase="running",
+                    message="Job running",
+                    completed_steps=1,
+                    total_steps=2,
+                    source_progress=job.progress,
+                )
                 job.partial_result = "Job running"
                 job.touch()
                 self._save_job(job)
@@ -294,6 +411,7 @@ class CodebaseAnalysisJobManager:
                     config=config,
                     library_name=library_name,
                     query=query,
+                    job_id=job.job_id,
                 )
 
                 if job.cancel_requested:
@@ -302,13 +420,15 @@ class CodebaseAnalysisJobManager:
                     return
 
                 job.result = result
-                job.partial_result = result
-                job.progress = {
-                    "phase": "complete",
-                    "message": "Analysis completed",
-                    "completed_steps": 2,
-                    "total_steps": 2,
-                }
+                # job.partial_result = result
+                job.partial_result = "Job done, result available."
+                job.progress = _progress_payload(
+                    phase="complete",
+                    message="Analysis completed",
+                    completed_steps=2,
+                    total_steps=2,
+                    source_progress=job.progress,
+                )
                 self._mark_terminal(job, "done")
                 await self._notify(job.job_id)
         except asyncio.CancelledError:
@@ -317,12 +437,13 @@ class CodebaseAnalysisJobManager:
             raise
         except Exception as exc:
             job.error = _serialize_error(exc)
-            job.progress = {
-                "phase": "error",
-                "message": "Job failed",
-                "completed_steps": 1,
-                "total_steps": 2,
-            }
+            job.progress = _progress_payload(
+                phase="error",
+                message="Job failed",
+                completed_steps=1,
+                total_steps=2,
+                source_progress=job.progress,
+            )
             self._mark_terminal(job, "error")
             await self._notify(job.job_id)
 
@@ -364,6 +485,7 @@ class CodebaseAnalysisJobManager:
                 """
                 CREATE TABLE IF NOT EXISTS analysis_jobs (
                     job_id TEXT PRIMARY KEY,
+                    job_type TEXT,
                     library_name TEXT NOT NULL,
                     query TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -379,6 +501,7 @@ class CodebaseAnalysisJobManager:
                 )
                 """
             )
+            self._ensure_column(connection, "analysis_jobs", "job_type", "TEXT")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status ON analysis_jobs(status)"
             )
@@ -429,6 +552,7 @@ class CodebaseAnalysisJobManager:
                 """
                 INSERT INTO analysis_jobs (
                     job_id,
+                    job_type,
                     library_name,
                     query,
                     status,
@@ -442,8 +566,9 @@ class CodebaseAnalysisJobManager:
                     started_at,
                     completed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
+                    job_type = excluded.job_type,
                     library_name = excluded.library_name,
                     query = excluded.query,
                     status = excluded.status,
@@ -459,6 +584,7 @@ class CodebaseAnalysisJobManager:
                 """,
                 (
                     job.job_id,
+                    job.job_type,
                     job.library_name,
                     job.query,
                     job.status,
@@ -472,6 +598,22 @@ class CodebaseAnalysisJobManager:
                     job.started_at,
                     job.completed_at,
                 ),
+            )
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_definition: str,
+    ) -> None:
+        existing_columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name not in existing_columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
             )
 
     def _get_job(self, job_id: str) -> AnalysisJob | None:
@@ -585,11 +727,18 @@ class CodebaseAnalysisJobManager:
         result = {
             "job_id": job.job_id,
             "status": job.status,
-            "progress": job.progress,
-            "error": job.error,
+            # "progress": job.progress,
+            "progress": _progress_payload_short(job.progress),
+            # "error": job.error,
         }
+        if job.error:
+            result["error"] = job.error
+        
         if "running" == job.status:
-            result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_status` tool internally waits up to 50s/request. You are forbidden to finish response while polling is running."
+            # result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_status` tool internally waits up to 50s/request. You are forbidden to finish response while polling is running. If `codebase_get_job_status` returns 'running', continue polling; even if the `progress` field does not change for several calls, assume the process is working unless you receive a terminal error."
+            result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_status` tool internally waits up to 50s/request. You are forbidden to finish response untill you receive a finished result or terminal error."
+        elif "done" == job.status:
+            result["llm_agent_instructions"] = "The analysis job has completed successfully. You must now retrieve the result using `codebase_get_job_result` tool."
 
         return result
 
@@ -598,18 +747,75 @@ class CodebaseAnalysisJobManager:
             "job_id": job.job_id,
             "status": job.status,
             "result": job.result,
-            "partial_result": job.partial_result,
-            "error": job.error,
+            # "partial_result": job.partial_result,
+            # "error": job.error,
         }
+        if job.error:
+            result["error"] = job.error
+        
         if "running" == job.status:
             result["llm_agent_instructions"] = "You must poll using `codebase_get_job_status` tool until `success`/`failure`. `codebase_get_job_result` tool internally waits up to 50s/request. You are forbidden to finish response while polling is running."
 
         return result
 
 
+def _progress_payload(
+    *,
+    phase: str,
+    message: str,
+    completed_steps: int | None = None,
+    total_steps: int | None = None,
+    source_progress: Mapping[str, Any] | None = None,
+) -> Progress:
+    progress: Progress = {
+        "phase": phase,
+        "message": message,
+    }
+    if completed_steps is not None:
+        progress["completed_steps"] = completed_steps
+    if total_steps is not None:
+        progress["total_steps"] = total_steps
+
+    for counter_name in SUBLLM_PROGRESS_COUNTERS:
+        progress[counter_name] = _progress_counter_value(source_progress, counter_name)
+
+    return progress
+
+
+def _progress_payload_short(
+    source_progress: Mapping[str, Any] | None = None,
+) -> Progress:
+    progress: Progress = dict()
+    # if source_progress is not None:
+    #     if "phase" in source_progress:
+    #         if source_progress["phase"] is not None:
+    #             progress["phase"] = source_progress["phase"]
+    
+    progress["input_tokens_processed"] = _progress_counter_value(source_progress, "input_tokens_used_by_subllm")
+    # progress["output_tokens_generated"] = _progress_counter_value(source_progress, "output_tokens_generated_by_subllm")
+    progress["output_bytes_generated"] = _progress_counter_value(source_progress, "output_bytes_generated_by_subllm")
+    progress["context_compations_made"] = _progress_counter_value(source_progress, "llm_context_compations_made_by_subharness")
+
+    return progress
+
+
+def _progress_counter_value(
+    progress: Mapping[str, Any] | None,
+    counter_name: str,
+) -> int:
+    if progress is None:
+        return 0
+
+    try:
+        return int(progress.get(counter_name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _job_from_row(row: sqlite3.Row) -> AnalysisJob:
     return AnalysisJob(
         job_id=str(row["job_id"]),
+        job_type=row["job_type"],
         library_name=str(row["library_name"]),
         query=str(row["query"]),
         status=row["status"],
@@ -656,12 +862,24 @@ def _not_found_payload(job_id: str) -> dict[str, Any]:
     }
 
 
-def _validate_job_id(job_id: str) -> None:
-    if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
-        raise InvalidJobIdError(
-            "job_id must be the exact 32-character lowercase hex id returned by the start tool; "
-            f"received {job_id!r} ({len(job_id)} characters)."
-        )
+if USE_URLSAFE_JOB_ID:
+    def _validate_job_id(job_id: str) -> None:
+        if (
+            len(job_id) != JOB_ID_TOKEN_URLSAFE_EXPECTED_LENGTH
+            or any(ch not in _TOKEN_URLSAFE_ALPHABET for ch in job_id)
+        ):
+            raise InvalidJobIdError(
+                f"job_id must be the exact {JOB_ID_TOKEN_URLSAFE_EXPECTED_LENGTH}-character value "
+                f"returned by secrets.token_urlsafe({JOB_ID_TOKEN_URLSAFE_NBYTES}); "
+                f"received {job_id!r} ({len(job_id)} characters)."
+            )
+else:
+    def _validate_job_id(job_id: str) -> None:
+        if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
+            raise InvalidJobIdError(
+                "job_id must be the exact 32-character lowercase hex id returned by the start tool; "
+                f"received {job_id!r} ({len(job_id)} characters)."
+            )
 
 
 def _serialize_error(exc: Exception) -> dict[str, str]:

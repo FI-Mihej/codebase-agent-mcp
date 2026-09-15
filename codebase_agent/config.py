@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -32,6 +32,8 @@ from cengal.file_system.app_fs_structure.app_dir_path import AppDirectoryType, A
 from cengal.file_system.file_manager import path_relative_to_current_src, file_exists
 from cengal.text_processing.open_text_file import OpenTextFile
 from shutil import copyfile
+from math import ceil
+import logging
 
 
 CONFIG_TEMPLATE_NAME = "codebase_agent.config.example.json"
@@ -117,8 +119,12 @@ class PluginConfig(BaseModel):
     name: str = Field(..., min_length=1)
     allowed: bool = True
     denied_tools: list[str] = Field(default_factory=list)
+    llm_agent_instructions: Optional[str] = None
     configuration: dict[str, Any] = Field(default_factory=dict)
 
+    def __lt__(self, other):
+        return self.name < other.name
+    
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: str) -> str:
@@ -149,16 +155,21 @@ class OpenAICompatibleConfig(BaseModel):
     model: str = Field(..., min_length=1)
     api_key: str = Field(..., min_length=1)
     temperature: float = 0.2
-    reasoning_allowed: bool = False
-    reasoning_effort: str = ""
+    reasoning_allowed: bool = True
+    reasoning_effort: str = "low"
     max_tokens: int = Field(default=4096, gt=0)
-    context_compression_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
-    timeout_seconds: float = Field(default=300, gt=0)
+    context_compression_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    timeout_seconds: float = Field(default=3000, gt=0)
     built_in_plugins: list[PluginConfig] = Field(default_factory=list)
     mcp_plugins: list[PluginConfig] = Field(default_factory=list)
     tool_backend: ToolBackend = "openai_tools"
-    max_tool_rounds: int = Field(default=12, ge=-1)
-    max_tool_response_bytes: int = Field(default=5 * 1024, ge=0)
+    max_tool_rounds: int = Field(default=2000, ge=0)
+    max_tool_response_bytes: int = Field(default=0, ge=0)
+    # llm_guidance_role: str = Field(default="developer", min_length=1)
+    llm_guidance_role: str = Field(default="user", min_length=1)
+    tail_anti_stuck_mechanism_tool_calls_to_activate: int = Field(default=5, ge=-1)
+    full_anti_stuck_mechanism_tool_calls_to_activate: int = Field(default=25, ge=-1)
+    stream: bool = True
 
     @field_validator("built_in_plugins", mode="before")
     @classmethod
@@ -200,6 +211,15 @@ class OpenAICompatibleConfig(BaseModel):
         
         return normalized
 
+    @model_validator(mode="after")
+    def calculate_derived(self):
+        if 0 == self.max_tool_response_bytes:
+            divider: float = 3.5
+            bytes_per_token: float = 3.5
+            self.max_tool_response_bytes = ceil((self.max_tokens * ((1.0 - self.context_compression_threshold) / divider)) * bytes_per_token)
+
+        return self
+    
     def normalized_base_url(self) -> str:
         """Return the OpenAI compatible `/v1` base URL."""
 
@@ -212,12 +232,12 @@ class OpenAICompatibleConfig(BaseModel):
     def all_plugins(self) -> list[PluginConfig]:
         """Return all configured local-model plugins."""
 
-        return self.built_in_plugins + self.mcp_plugins
+        return sorted(self.built_in_plugins + self.mcp_plugins)
     
     def allowed_plugins(self) -> list[PluginConfig]:
         """Return the configured local-model plugins that are allowed."""
 
-        return [plugin for plugin in self.all_plugins() if plugin.allowed]
+        return sorted([plugin for plugin in self.all_plugins() if plugin.allowed])
     
     def allowed_plugin_names(self) -> set[str]:
         """Return the configured local-model plugin names that are allowed."""
@@ -382,6 +402,18 @@ class IODebugConfig(BaseModel):
     server_plugins: bool = True
 
 
+class LoggerConfig(BaseModel):
+    """Optional logging settings."""
+
+    logging_level: str = "WARNING"
+    include_tools: bool = False
+
+    def get_logging_level(self) -> int:
+        """Return the logging level as an integer."""
+        level = self.logging_level.upper()
+        return logging.getLevelNamesMapping().get(level, logging.WARNING)
+
+
 class AgentConfig(BaseModel):
     """Root project configuration."""
 
@@ -389,6 +421,7 @@ class AgentConfig(BaseModel):
     libraries: list[LibraryConfig] = Field(default_factory=list)
     jobs: JobConfig = Field(default_factory=JobConfig)
     io_debug: IODebugConfig = Field(default_factory=IODebugConfig)
+    logger: LoggerConfig = Field(default_factory=LoggerConfig)
 
     @model_validator(mode="after")
     def library_names_must_be_unique(self) -> "AgentConfig":
