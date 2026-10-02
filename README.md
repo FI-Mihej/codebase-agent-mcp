@@ -10,16 +10,33 @@
 
 # CodebaseAgent-MCP
 
+> NOTE:
+
+> Based on my actual use of this subharness in my daily life (analyzing large volumes of data such as documents, sets of scientific papers, huge content saved from the government websites with poor filtering/search functionality, etc. - meaning it is far from just helping large LLMs retrieve information from large codebases) - this project is now smoothly evolving into a standalone general-purpose long-horizon agent subharness that can be connected to any CLI/GUI agent. This is for ease of use and to minimize the amount of my personal time spent writing and maintaining a high-quality custom CLI/GUI interface (rather than buggy or half-working, like many popular CLI/GUI agents written blindly by Claude/Codex).
+
 CodebaseAgent-MCP is a token-efficient MCP server for AI coding agents that delegates large codebase analysis to a dedicated OpenAI-compatible LLM, reducing context size, latency, and token costs. Instead of forcing your primary coding assistant to repeatedly scan large codebases, it performs that work separately and returns only the information needed for the current task.
 
 It can run against local models such as Gemma or Qwen, as well as inexpensive OpenAI-compatible cloud providers, reducing both latency and token consumption while keeping the primary assistant focused on reasoning and code generation.
 
 Optional Qdrant integration can cache previous retrieval results today and is planned to evolve into semantic retrieval of code entities (files, classes and functions) from connected codebases.
 
+# QA
+
+> Why don't you just use LangChain?
+
+Because I am intentionally focused on the OpenAI Chat Completions API, which is historically the most fully supported interface across third-party inference servers. Furthermore, LangChain cannot (and "not planned" to) retrieve or send, as part of the chat history, unofficial but de facto established custom fields for reasoning. Using reasoning during a chat process is a key necessity both because research shows it drastically improves the quality of LLM outputs in long-horizon chats and because it allows me to precisely manage the inference process from outside the inference server - for example, by stopping a looped generation process for reasoning and responses in models where you can only set the reasoning level but cannot disable it entirely.
+
+# Github repository
+
+The GitHub repository is my public mirror of the project. As I usually do, I conduct active development (including experimental code and private research notes) in a private repository (part of my research monorepos with binary data that need to be versioned - these exceed GitHub's limits, and it is impractical to deal with workarounds for such limitations in experimental projects); selected snapshots are published here periodically.
+
+Nevertheless, pull requests are welcome (not from LLMs).
+
 ## Subharness features
 
 - Designed specifically for managing small LLMs: it focuses on addressing their specific behavioral characteristics and weaknesses that prevent other harnesses from working with them effectively.
 - Precise conversation-history compaction.
+- Recursive subagent tree with configurable depth.
 - LLM anti-stuck mechanism (prevents the model from falling into infinite self-repetition loops).
 - Task completion control (prevents premature termination of work by small LLM)
 - A tree of full-fledged subagents.
@@ -283,10 +300,6 @@ It will be launched similarly to the following:
 ```bash
 uvx --from codebase-agent-mcp cb-agent-sanitize-library-codebases
 ```
-
-# Github repository
-
-Github repository is a curated public mirror of the project. Active development (including experimental code and private research notes) happens in a private repository; selected snapshots are published here periodically.
 
 ## Roadmap
 
