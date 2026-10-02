@@ -20,13 +20,13 @@ It can run against local models such as Gemma or Qwen, as well as inexpensive Op
 
 Optional Qdrant integration can cache previous retrieval results today and is planned to evolve into semantic retrieval of code entities (files, classes and functions) from connected codebases.
 
-# QA
+## QA
 
 > Why don't you just use LangChain?
 
 Because I am intentionally focused on the OpenAI Chat Completions API, which is historically the most fully supported interface across third-party inference servers. Furthermore, LangChain cannot (and "not planned" to) retrieve or send, as part of the chat history, unofficial but de facto established custom fields for reasoning. Using reasoning during a chat process is a key necessity both because research shows it drastically improves the quality of LLM outputs in long-horizon chats and because it allows me to precisely manage the inference process from outside the inference server - for example, by stopping a looped generation process for reasoning and responses in models where you can only set the reasoning level but cannot disable it entirely.
 
-# Github repository
+## Github repository
 
 The GitHub repository is my public mirror of the project. As I usually do, I conduct active development (including experimental code and private research notes) in a private repository (part of my research monorepos with binary data that need to be versioned - these exceed GitHub's limits, and it is impractical to deal with workarounds for such limitations in experimental projects); selected snapshots are published here periodically.
 
